@@ -1,33 +1,65 @@
-<!doctype html><html><head>
-  <meta charset="utf-8">
-  <title>Devis</title>
-  <link rel="stylesheet" href="stylesheet.css">
-</head><body>
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Devis {{ quote.number }}</title>
+  <link rel="stylesheet" href="stylesheet.css" />
+</head>
+<body>
   <div class="header">
     <div>
-      <h1>DEVIS</h1>
-      <div>{{ quote.number }}</div>
+      <div class="h-title">Devis {{ quote.number }}</div>
+      {% if quote.event_date %}<div class="small">Évènement : {{ quote.event_date }}</div>{% endif %}
     </div>
-    <div>
-      <strong>{{ company.name }}</strong><br>
-      {{ company.address }}<br>
-      {{ company.email }}
+    <div class="small">
+      <strong>{{ company.name }}</strong><br/>
+      {{ company.address }}<br/>
+      {{ company.email }}<br/>
+      {% if company.siret %}SIRET : {{ company.siret }}{% endif %}
     </div>
   </div>
+
   <div class="box">
-    <h3>Client</h3>
-    <div>{{ client.name }} — {{ client.email }}</div>
+    <strong>Client</strong><br/>
+    {{ client.name }}<br/>
+    {{ client.email }}
   </div>
-  <table>
-    <thead><tr><th>Désignation</th><th>Qté</th><th>PU TTC</th><th>Total TTC</th></tr></thead>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Libellé</th>
+        <th>Description</th>
+        <th>Qté</th>
+        <th>PU TTC</th>
+        <th>Remise</th>
+        <th>Total TTC</th>
+      </tr>
+    </thead>
     <tbody>
-      {% for line in quote.lines %}
-        <tr><td>{{ line.label }}</td><td>{{ line.qty }}</td><td>{{ line.unit_price_ttc }}</td><td>{{ line.total_ttc }}</td></tr>
+      {% for l in quote.lines %}
+      <tr>
+        <td>{{ l.label }}</td>
+        <td>{{ l.description }}</td>
+        <td>{{ '%.2f'|format(l.qty) }}</td>
+        <td>{{ l.unit_price_ttc }}</td>
+        <td>{{ '%.0f'|format(l.remise_pct) }} %</td>
+        <td>{{ l.total_ttc }}</td>
+      </tr>
       {% endfor %}
     </tbody>
-    <tfoot>
-      <tr><td colspan="3">TOTAL TTC</td><td>{{ quote.total_ttc }}</td></tr>
-    </tfoot>
   </table>
-  <div class="legal">TVA non applicable, art. 293 B du CGI.</div>
-</body></html>
+
+  <div class="totals">
+    <div class="box">
+      <div><strong>Total TTC :</strong> {{ quote.total_ttc }}</div>
+      <div class="small">TVA non applicable, art. 293 B du CGI</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <strong>Conditions & Mentions</strong><br/>
+    {{ terms }}
+  </div>
+</body>
+</html>
