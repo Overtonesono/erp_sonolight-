@@ -17,6 +17,7 @@ from ui.widgets.client_form import ClientForm
 from ui.widgets.product_form import ProductServiceForm
 from ui.widgets.quote_editor import QuoteEditor
 from ui.widgets.payment_dialog import PaymentDialog
+from core.services.workflow_service import WorkflowService
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 
@@ -29,6 +30,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("ERP Sonolight - Devis & Factures v1")
         self.resize(1280, 800)
+        self.workflow = WorkflowService()
 
         self.client_service = ClientService()
         self.catalog_service = CatalogService()
@@ -265,32 +267,26 @@ class MainWindow(QMainWindow):
         w = QWidget()
         root = QVBoxLayout(w)
 
-        # Ligne 1: CRUD + Export devis
+        # Ligne 1: CRUD + PDF devis
         bar1 = QHBoxLayout()
         btn_new = QPushButton("Nouveau devis")
         btn_edit = QPushButton("Modifier")
         btn_del = QPushButton("Supprimer")
-        btn_pdf = QPushButton("Exporter devis (PDF/HTML)")
+        btn_pdf = QPushButton("Générer PDF du devis")
         bar1.addWidget(btn_new); bar1.addWidget(btn_edit); bar1.addWidget(btn_del)
         bar1.addStretch(1); bar1.addWidget(btn_pdf)
         root.addLayout(bar1)
 
-        # Ligne 2: Workflow facturation
+        # Ligne 2: Workflow ergonomique
         bar2 = QHBoxLayout()
-        btn_accept = QPushButton("Marquer ACCEPTÉ")
-        btn_refuse = QPushButton("Marquer REFUSÉ")
-        btn_gen_acompte = QPushButton("Générer facture ACOMPTE (30%)")
-        btn_pay_acompte = QPushButton("Encaisser ACOMPTE")
-        btn_gen_solde = QPushButton("Générer facture SOLDE")
-        btn_pay_solde = QPushButton("Encaisser SOLDE")
-        btn_final = QPushButton("Générer FACTURE FINALE")
-        btn_export_invoice = QPushButton("Exporter facture sélectionnée")
-        for b in (btn_accept, btn_refuse, btn_gen_acompte, btn_pay_acompte, btn_gen_solde, btn_pay_solde, btn_final):
-            bar2.addWidget(b)
-        bar2.addStretch(1); bar2.addWidget(btn_export_invoice)
+        btn_refuse = QPushButton("Refuser devis")
+        btn_pay_deposit = QPushButton("Enregistrer ACOMPTE (30%)")
+        btn_pay_balance = QPushButton("Enregistrer SOLDE (70%)")
+        bar2.addWidget(btn_refuse); bar2.addStretch(1)
+        bar2.addWidget(btn_pay_deposit); bar2.addWidget(btn_pay_balance)
         root.addLayout(bar2)
 
-        # Table des devis
+        # Table devis
         self.tbl_quotes = QTableWidget(0, 6)
         self.tbl_quotes.setHorizontalHeaderLabels(["Numéro", "Client", "Statut", "Total TTC", "Créé le", "ID"])
         self.tbl_quotes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -298,7 +294,7 @@ class MainWindow(QMainWindow):
         self.tbl_quotes.setEditTriggers(self.tbl_quotes.EditTrigger.NoEditTriggers)
         root.addWidget(self.tbl_quotes, 1)
 
-        # Table des factures liées au devis sélectionné
+        # Table factures liées
         self.tbl_invoices = QTableWidget(0, 6)
         self.tbl_invoices.setHorizontalHeaderLabels(["Numéro", "Type", "Statut", "Total TTC", "Créé le", "ID"])
         self.tbl_invoices.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -310,16 +306,11 @@ class MainWindow(QMainWindow):
         btn_new.clicked.connect(self._quote_new)
         btn_edit.clicked.connect(self._quote_edit)
         btn_del.clicked.connect(self._quote_delete)
-        btn_pdf.clicked.connect(self._quote_export)
+        btn_pdf.clicked.connect(self._quote_export_pdf)
 
-        btn_accept.clicked.connect(lambda: self._quote_set_status("ACCEPTED"))
-        btn_refuse.clicked.connect(lambda: self._quote_set_status("REFUSED"))
-        btn_gen_acompte.clicked.connect(self._gen_acompte)
-        btn_pay_acompte.clicked.connect(lambda: self._pay_invoice("ACOMPTE"))
-        btn_gen_solde.clicked.connect(self._gen_solde)
-        btn_pay_solde.clicked.connect(lambda: self._pay_invoice("SOLDE"))
-        btn_final.clicked.connect(self._gen_final)
-        btn_export_invoice.clicked.connect(self._export_selected_invoice)
+        btn_refuse.clicked.connect(self._quote_refuse)
+        btn_pay_deposit.clicked.connect(lambda: self._quote_record_payment(kind="ACOMPTE"))
+        btn_pay_balance.clicked.connect(lambda: self._quote_record_payment(kind="SOLDE"))
 
         self.tbl_quotes.itemSelectionChanged.connect(self._refresh_invoices_for_selected_quote)
 
@@ -513,3 +504,51 @@ class MainWindow(QMainWindow):
         btn_open.clicked.connect(lambda: QFileDialog.getOpenFileName(self, "Ouvrir un fichier", DATA_DIR))
         lay.addWidget(btn_open)
         return w
+
+    # --- handlers nouveaux/ajustés ---
+    def _quote_export_pdf(self):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+        out = self.quote_service.export_quote_pdf(q)
+        QMessageBox.information(self, "PDF devis", f"Fichier généré :\n{out}")
+
+    def _quote_refuse(self):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+        self.workflow.refuse_quote(q)
+        self._refresh_quotes()
+
+    def _quote_record_payment(self, kind: str):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+
+        # montant par défaut (30% ou 70% du restant)
+        if kind == "ACOMPTE":
+            default_cent = int(round(q.total_ttc_cent * 0.30))
+        else:
+            default_cent = q.remaining_cent()
+
+        dlg = PaymentDialog(self, amount_cent=default_cent)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        method, amount_cent = dlg.get_payment()
+        if amount_cent <= 0:
+            QMessageBox.warning(self, "Paiement", "Montant invalide."); return
+
+        if kind == "ACOMPTE":
+            q, pdf_dep = self.workflow.record_deposit(q, amount_cent, method)
+            msg = f"Acompte enregistré.\nPDF facture d'acompte :\n{pdf_dep}"
+        else:
+            q, pdf_solde, pdf_final = self.workflow.record_balance(q, amount_cent, method)
+            msg = f"Solde enregistré.\nPDF facture de solde :\n{pdf_solde}"
+            if pdf_final:
+                msg += f"\nPDF facture finale :\n{pdf_final}"
+
+        self._refresh_quotes()
+        QMessageBox.information(self, "Encaissement", msg)
