@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 import os
 
+from PySide6.QtWidgets import QProgressBar
 from core.services.client_service import ClientService
 from core.services.catalog_service import CatalogService
 from core.services.quote_service import QuoteService
@@ -266,7 +267,7 @@ class MainWindow(QMainWindow):
     def _quotes_tab(self):
         w = QWidget()
         root = QVBoxLayout(w)
-
+    
         # Ligne 1: CRUD + PDF devis
         bar1 = QHBoxLayout()
         btn_new = QPushButton("Nouveau devis")
@@ -276,7 +277,7 @@ class MainWindow(QMainWindow):
         bar1.addWidget(btn_new); bar1.addWidget(btn_edit); bar1.addWidget(btn_del)
         bar1.addStretch(1); bar1.addWidget(btn_pdf)
         root.addLayout(bar1)
-
+    
         # Ligne 2: Workflow ergonomique
         bar2 = QHBoxLayout()
         btn_refuse = QPushButton("Refuser devis")
@@ -285,15 +286,25 @@ class MainWindow(QMainWindow):
         bar2.addWidget(btn_refuse); bar2.addStretch(1)
         bar2.addWidget(btn_pay_deposit); bar2.addWidget(btn_pay_balance)
         root.addLayout(bar2)
-
-        # Table devis
-        self.tbl_quotes = QTableWidget(0, 6)
-        self.tbl_quotes.setHorizontalHeaderLabels(["Numéro", "Client", "Statut", "Total TTC", "Créé le", "ID"])
+    
+        # Progression + résumé montants
+        bar3 = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.lbl_summary = QLabel("Total: 0.00 € | Payé: 0.00 € | Reste: 0.00 € | Évènement: –")
+        bar3.addWidget(QLabel("Progression:"))
+        bar3.addWidget(self.progress, 1)
+        bar3.addWidget(self.lbl_summary)
+        root.addLayout(bar3)
+    
+        # Table devis (ajout colonne progression visuelle)
+        self.tbl_quotes = QTableWidget(0, 7)
+        self.tbl_quotes.setHorizontalHeaderLabels(["Numéro", "Client", "Statut", "Progress", "Total TTC", "Évènement", "ID"])
         self.tbl_quotes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_quotes.setSelectionBehavior(self.tbl_quotes.SelectionBehavior.SelectRows)
         self.tbl_quotes.setEditTriggers(self.tbl_quotes.EditTrigger.NoEditTriggers)
         root.addWidget(self.tbl_quotes, 1)
-
+    
         # Table factures liées
         self.tbl_invoices = QTableWidget(0, 6)
         self.tbl_invoices.setHorizontalHeaderLabels(["Numéro", "Type", "Statut", "Total TTC", "Créé le", "ID"])
@@ -301,21 +312,140 @@ class MainWindow(QMainWindow):
         self.tbl_invoices.setSelectionBehavior(self.tbl_invoices.SelectionBehavior.SelectRows)
         self.tbl_invoices.setEditTriggers(self.tbl_invoices.EditTrigger.NoEditTriggers)
         root.addWidget(self.tbl_invoices, 1)
-
+    
+        # ✨ Tableau paiements
+        self.tbl_payments = QTableWidget(0, 5)
+        self.tbl_payments.setHorizontalHeaderLabels(["Date", "Type", "Montant TTC", "Moyen", "Facture liée"])
+        self.tbl_payments.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_payments.setSelectionBehavior(self.tbl_payments.SelectionBehavior.SelectRows)
+        self.tbl_payments.setEditTriggers(self.tbl_payments.EditTrigger.NoEditTriggers)
+        root.addWidget(self.tbl_payments, 1)
+    
         # Events
         btn_new.clicked.connect(self._quote_new)
         btn_edit.clicked.connect(self._quote_edit)
         btn_del.clicked.connect(self._quote_delete)
         btn_pdf.clicked.connect(self._quote_export_pdf)
-
         btn_refuse.clicked.connect(self._quote_refuse)
         btn_pay_deposit.clicked.connect(lambda: self._quote_record_payment(kind="ACOMPTE"))
         btn_pay_balance.clicked.connect(lambda: self._quote_record_payment(kind="SOLDE"))
-
-        self.tbl_quotes.itemSelectionChanged.connect(self._refresh_invoices_for_selected_quote)
-
+    
+        self.tbl_quotes.itemSelectionChanged.connect(self._on_quote_selection_changed)
+    
         self._refresh_quotes()
         return w
+        
+    def _progress_value_for(self, q: Quote) -> int:
+        if q.status == "REFUSED": return 0
+        if q.status == "PENDING": return 25
+        if q.status == "VALIDATED": return 60
+        if q.status == "FINALIZED": return 100
+        return 0
+    
+    def _on_quote_selection_changed(self):
+        self._refresh_invoices_for_selected_quote()
+        self._refresh_payments_for_selected_quote()
+        # maj barre + résumé
+        qid = self._selected_quote_id()
+        if not qid:
+            self.progress.setValue(0); self.lbl_summary.setText("Total: 0.00 € | Payé: 0.00 € | Reste: 0.00 € | Évènement: –")
+            return
+        q = self.quote_service.get_by_id(qid)
+        if not q: return
+        self.progress.setValue(self._progress_value_for(q))
+        t = money_cent_to_str(q.total_ttc_cent)
+        p = money_cent_to_str(q.paid_total_cent())
+        r = money_cent_to_str(q.remaining_cent())
+        ev = q.event_date.isoformat() if q.event_date else "–"
+        self.lbl_summary.setText(f"Total: {t} | Payé: {p} | Reste: {r} | Évènement: {ev}")
+    
+    def _refresh_quotes(self):
+        self.client_map = self.quote_service.load_client_map()
+        items = self.quote_service.list_quotes()
+        self.tbl_quotes.setRowCount(0)
+        for q in items:
+            r = self.tbl_quotes.rowCount(); self.tbl_quotes.insertRow(r)
+            self.tbl_quotes.setItem(r, 0, QTableWidgetItem(q.number or "—"))
+            cname = self.client_map.get(q.client_id).name if self.client_map.get(q.client_id) else "?"
+            self.tbl_quotes.setItem(r, 1, QTableWidgetItem(cname))
+            self.tbl_quotes.setItem(r, 2, QTableWidgetItem(q.status))
+            self.tbl_quotes.setItem(r, 3, QTableWidgetItem(f"{self._progress_value_for(q)}%"))
+            self.tbl_quotes.setItem(r, 4, QTableWidgetItem(money_cent_to_str(q.total_ttc_cent)))
+            self.tbl_quotes.setItem(r, 5, QTableWidgetItem(q.event_date.isoformat() if q.event_date else "—"))
+            self.tbl_quotes.setItem(r, 6, QTableWidgetItem(q.id))
+        self.tbl_quotes.resizeRowsToContents()
+        self._on_quote_selection_changed()
+    
+    def _refresh_invoices_for_selected_quote(self):
+        qid = self._selected_quote_id()
+        self.tbl_invoices.setRowCount(0)
+        if not qid: return
+        for inv in self.invoice_service.list_by_quote(qid):
+            r = self.tbl_invoices.rowCount(); self.tbl_invoices.insertRow(r)
+            self.tbl_invoices.setItem(r, 0, QTableWidgetItem(inv.number or "—"))
+            self.tbl_invoices.setItem(r, 1, QTableWidgetItem(inv.type))
+            self.tbl_invoices.setItem(r, 2, QTableWidgetItem(inv.status))
+            self.tbl_invoices.setItem(r, 3, QTableWidgetItem(money_cent_to_str(inv.total_ttc_cent)))
+            self.tbl_invoices.setItem(r, 4, QTableWidgetItem(inv.created_at.strftime("%Y-%m-%d")))
+            self.tbl_invoices.setItem(r, 5, QTableWidgetItem(inv.id))
+        self.tbl_invoices.resizeRowsToContents()
+    
+    def _refresh_payments_for_selected_quote(self):
+        qid = self._selected_quote_id()
+        self.tbl_payments.setRowCount(0)
+        if not qid: return
+        q = self.quote_service.get_by_id(qid)
+        if not q: return
+        for p in sorted(q.payments, key=lambda x: x.at):
+            r = self.tbl_payments.rowCount(); self.tbl_payments.insertRow(r)
+            self.tbl_payments.setItem(r, 0, QTableWidgetItem(p.at.strftime("%Y-%m-%d")))
+            self.tbl_payments.setItem(r, 1, QTableWidgetItem(p.kind))
+            self.tbl_payments.setItem(r, 2, QTableWidgetItem(money_cent_to_str(p.amount_cent)))
+            self.tbl_payments.setItem(r, 3, QTableWidgetItem(p.method or "—"))
+            self.tbl_payments.setItem(r, 4, QTableWidgetItem(p.invoice_id or "—"))
+        self.tbl_payments.resizeRowsToContents()
+    
+    def _quote_export_pdf(self):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+        out = self.quote_service.export_quote_pdf(q)
+        QMessageBox.information(self, "PDF devis", f"Fichier généré :\n{out}")
+    
+    def _quote_refuse(self):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+        self.workflow.refuse_quote(q)
+        self._refresh_quotes()
+    
+    def _quote_record_payment(self, kind: str):
+        qid = self._selected_quote_id()
+        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+    
+        default_cent = int(round(q.total_ttc_cent * 0.30)) if kind == "ACOMPTE" else q.remaining_cent()
+        dlg = PaymentDialog(self, amount_cent=default_cent)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        method, amount_cent, paid_dt = dlg.get_payment()
+        if amount_cent <= 0:
+            QMessageBox.warning(self, "Paiement", "Montant invalide."); return
+    
+        if kind == "ACOMPTE":
+            q, pdf_dep = self.workflow.record_deposit(q, amount_cent, method, paid_dt)
+            msg = f"Acompte enregistré.\nPDF facture d'acompte :\n{pdf_dep}"
+        else:
+            q, pdf_solde, pdf_final = self.workflow.record_balance(q, amount_cent, method, paid_dt)
+            msg = f"Solde enregistré.\nPDF facture de solde :\n{pdf_solde}"
+            if pdf_final:
+                msg += f"\nPDF facture finale :\n{pdf_final}"
+    
+        self._refresh_quotes()
+        QMessageBox.information(self, "Encaissement", msg)
 
     def _refresh_quotes(self):
         self.client_map = self.quote_service.load_client_map()
@@ -504,51 +634,3 @@ class MainWindow(QMainWindow):
         btn_open.clicked.connect(lambda: QFileDialog.getOpenFileName(self, "Ouvrir un fichier", DATA_DIR))
         lay.addWidget(btn_open)
         return w
-
-    # --- handlers nouveaux/ajustés ---
-    def _quote_export_pdf(self):
-        qid = self._selected_quote_id()
-        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
-        q = self.quote_service.get_by_id(qid)
-        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
-        out = self.quote_service.export_quote_pdf(q)
-        QMessageBox.information(self, "PDF devis", f"Fichier généré :\n{out}")
-
-    def _quote_refuse(self):
-        qid = self._selected_quote_id()
-        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
-        q = self.quote_service.get_by_id(qid)
-        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
-        self.workflow.refuse_quote(q)
-        self._refresh_quotes()
-
-    def _quote_record_payment(self, kind: str):
-        qid = self._selected_quote_id()
-        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
-        q = self.quote_service.get_by_id(qid)
-        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
-
-        # montant par défaut (30% ou 70% du restant)
-        if kind == "ACOMPTE":
-            default_cent = int(round(q.total_ttc_cent * 0.30))
-        else:
-            default_cent = q.remaining_cent()
-
-        dlg = PaymentDialog(self, amount_cent=default_cent)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        method, amount_cent = dlg.get_payment()
-        if amount_cent <= 0:
-            QMessageBox.warning(self, "Paiement", "Montant invalide."); return
-
-        if kind == "ACOMPTE":
-            q, pdf_dep = self.workflow.record_deposit(q, amount_cent, method)
-            msg = f"Acompte enregistré.\nPDF facture d'acompte :\n{pdf_dep}"
-        else:
-            q, pdf_solde, pdf_final = self.workflow.record_balance(q, amount_cent, method)
-            msg = f"Solde enregistré.\nPDF facture de solde :\n{pdf_solde}"
-            if pdf_final:
-                msg += f"\nPDF facture finale :\n{pdf_final}"
-
-        self._refresh_quotes()
-        QMessageBox.information(self, "Encaissement", msg)
