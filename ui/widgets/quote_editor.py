@@ -78,61 +78,53 @@ class QuoteEditor(QDialog):
         self.service = QuoteService()
         self.client_service = ClientService()
         self.catalog_service = CatalogService()
-
-        # Champs
+                
         self.cb_client = QComboBox()
         self.ed_notes = QTextEdit()
-        self.ed_event_date = QDateEdit()
-        self.ed_event_date.setCalendarPopup(True)
-        self.ed_event_date.setDate(QDate.currentDate())
-
-        # Totaux
+        self.ed_event_date = QDateEdit(); self.ed_event_date.setCalendarPopup(True); self.ed_event_date.setDate(QDate.currentDate())
+                
         self.lab_total = QLabel("Total TTC : 0.00 €")
-
-        # Lignes
-        self.tbl = QTableWidget(0, 6)
-        self.tbl.setHorizontalHeaderLabels(["Type", "Libellé", "Qté", "PU TTC", "Remise %", "Total TTC"])
+                
+        # ✨ Ajout colonne Description
+        self.tbl = QTableWidget(0, 7)
+        self.tbl.setHorizontalHeaderLabels(["Type", "Libellé", "Description", "Qté", "PU TTC", "Remise %", "Total TTC"])
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl.setSelectionBehavior(self.tbl.SelectionBehavior.SelectRows)
         self.tbl.setEditTriggers(self.tbl.EditTrigger.NoEditTriggers)
-
+                
         btn_add = QPushButton("Ajouter une ligne")
         btn_del = QPushButton("Supprimer la ligne")
         btn_add.clicked.connect(self._add_line)
         btn_del.clicked.connect(self._del_line)
-
+                
         top = QFormLayout()
         top.addRow("Client", self.cb_client)
-        top.addRow("Date de l’évènement", self.ed_event_date)  # ✨ NOUVEAU
+        top.addRow("Date de l’évènement", self.ed_event_date)
         top.addRow("Notes", self.ed_notes)
-
+                
         bar = QHBoxLayout()
-        bar.addWidget(btn_add)
-        bar.addWidget(btn_del)
-        bar.addStretch(1)
-        bar.addWidget(self.lab_total)
-
+        bar.addWidget(btn_add); bar.addWidget(btn_del); bar.addStretch(1); bar.addWidget(self.lab_total)
+                
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-
+                
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addLayout(bar)
         lay.addWidget(self.tbl)
         lay.addWidget(btns)
-
+                
         self._quote_orig = quote
         self._lines: list[QuoteLine] = []
         self._clients = self.service.load_client_map()
-        # remplir clients
         for cid, c in self._clients.items():
-            self.cb_client.addItem(f"{c.name} ({c.email or '—'})", cid)
-
+        self.cb_client.addItem(f"{c.name} ({c.email or '—'})", cid)
+                
         if quote:
-            self._fill_from_quote(quote)
+        self._fill_from_quote(quote)
         else:
-            self._update_totals()
+        self._update_totals()
 
     # -------- UI helpers --------
     def _fill_from_quote(self, q: Quote):
