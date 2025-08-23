@@ -223,7 +223,7 @@ class MainWindow(QMainWindow):
         return self.tbl_services.item(row, 5).text()
 
     def _catalog_new(self, which: str):
-        dlg = ui.widgets.product_form.ProductServiceForm(self, item=None, item_type=which)  # type: ignore
+        dlg = ProductServiceForm(self, item=None, item_type=which)
         if dlg.exec() == QDialog.Accepted:
             it = dlg.get_item()
             if not it:
@@ -242,7 +242,7 @@ class MainWindow(QMainWindow):
         if not cur:
             QMessageBox.warning(self, "Catalogue", "Impossible de charger cet élément.")
             return
-        dlg = ui.widgets.product_form.ProductServiceForm(self, item=cur, item_type=which)  # type: ignore
+        dlg = ProductServiceForm(self, item=cur, item_type=which)
         if dlg.exec() == QDialog.Accepted:
             it = dlg.get_item()
             if not it:
