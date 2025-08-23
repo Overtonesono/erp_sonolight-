@@ -152,7 +152,7 @@ class QuoteEditor(QDialog):
 
     def _add_line(self):
         dlg = _AddLineDialog(self, self.catalog_service)
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             ln = dlg.get_line()
             if ln:
                 self._lines.append(ln)
