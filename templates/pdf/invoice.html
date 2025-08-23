@@ -1,0 +1,33 @@
+<!doctype html><html><head>
+  <meta charset="utf-8">
+  <title>Facture</title>
+  <link rel="stylesheet" href="stylesheet.css">
+</head><body>
+  <div class="header">
+    <div>
+      <h1>FACTURE {{ invoice.type }}</h1>
+      <div>{{ invoice.number }}</div>
+    </div>
+    <div>
+      <strong>{{ company.name }}</strong><br>
+      {{ company.address }}<br>
+      {{ company.email }}
+    </div>
+  </div>
+  <div class="box">
+    <h3>Client</h3>
+    <div>{{ client.name }} — {{ client.email }}</div>
+  </div>
+  <table>
+    <thead><tr><th>Désignation</th><th>Qté</th><th>PU TTC</th><th>Total TTC</th></tr></thead>
+    <tbody>
+      {% for line in invoice.lines %}
+        <tr><td>{{ line.label }}</td><td>{{ line.qty }}</td><td>{{ line.unit_price_ttc }}</td><td>{{ line.total_ttc }}</td></tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr><td colspan="3">TOTAL TTC</td><td>{{ invoice.total_ttc }}</td></tr>
+    </tfoot>
+  </table>
+  <div class="legal">TVA non applicable, art. 293 B du CGI.</div>
+</body></html>

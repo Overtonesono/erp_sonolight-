@@ -1,0 +1,15 @@
+[
+  {
+    "id": "cli-001",
+    "name": "Tiphaine & Adrien",
+    "contact_name": "Tiphaine",
+    "email": "client@example.com",
+    "phone": "+33 6 00 00 00 00",
+    "address": {
+      "line1": "1 rue de l'Étoile",
+      "postal_code": "75001",
+      "city": "Paris"
+    },
+    "notes": "Mariage - besoin d'éclairage piste + ambiance extérieure"
+  }
+]

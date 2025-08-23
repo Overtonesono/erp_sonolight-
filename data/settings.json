@@ -1,0 +1,18 @@
+{
+  "company": {
+    "name": "Overtone Sonorisation",
+    "email": "contact@overtone.example",
+    "address": "12 rue du Son, 31000 Toulouse, France",
+    "siret": "000 000 000 00000"
+  },
+  "numbering": {
+    "quote_prefix": "DEV-",
+    "invoice_prefix": "FAC-",
+    "sequence": 1
+  },
+  "acompte_pct": 30,
+  "no_vat": true,
+  "calendar": {
+    "default_calendar_id": "primary"
+  }
+}

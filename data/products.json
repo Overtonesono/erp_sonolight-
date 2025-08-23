@@ -1,0 +1,20 @@
+[
+  {
+    "id": "prd-lyre",
+    "type": "product",
+    "ref": "LYRE-200W",
+    "label": "Lyre LED 200W",
+    "price_ttc_cent": 12000,
+    "unit": "pièce",
+    "active": true
+  },
+  {
+    "id": "prd-par",
+    "type": "product",
+    "ref": "PAR-18x10",
+    "label": "PAR LED 18x10W",
+    "price_ttc_cent": 6000,
+    "unit": "pièce",
+    "active": true
+  }
+]

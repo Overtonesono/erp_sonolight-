@@ -1,0 +1,20 @@
+[
+  {
+    "id": "srv-dj",
+    "type": "service",
+    "ref": "DJ-MARIAGE",
+    "label": "Prestation DJ Mariage (forfait)",
+    "price_ttc_cent": 120000,
+    "unit": "prestation",
+    "active": true
+  },
+  {
+    "id": "srv-light",
+    "type": "service",
+    "ref": "LIGHT-SETUP",
+    "label": "Mise en lumière salle",
+    "price_ttc_cent": 45000,
+    "unit": "prestation",
+    "active": true
+  }
+]
