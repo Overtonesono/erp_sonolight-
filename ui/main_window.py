@@ -2,7 +2,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGroupBox
+    QTableWidgetItem, QHeaderView, QGroupBox, QDialog   # <-- ajouté
 )
 from PySide6.QtCore import Qt
 import os
@@ -96,7 +96,7 @@ class MainWindow(QMainWindow):
 
     def _client_new(self):
         dlg = ClientForm(self)
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             c = dlg.get_client()
             if not c:
                 QMessageBox.warning(self, "Validation", "Nom obligatoire.")
@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Clients", "Impossible de charger ce client.")
             return
         dlg = ClientForm(self, client=current)
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             c = dlg.get_client()
             if not c:
                 QMessageBox.warning(self, "Validation", "Nom obligatoire.")
@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
 
     def _catalog_new(self, which: str):
         dlg = ui.widgets.product_form.ProductServiceForm(self, item=None, item_type=which)  # type: ignore
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             it = dlg.get_item()
             if not it:
                 QMessageBox.warning(self, "Validation", "Référence et libellé sont obligatoires.")
@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Catalogue", "Impossible de charger cet élément.")
             return
         dlg = ui.widgets.product_form.ProductServiceForm(self, item=cur, item_type=which)  # type: ignore
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             it = dlg.get_item()
             if not it:
                 QMessageBox.warning(self, "Validation", "Référence et libellé sont obligatoires.")
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
 
     def _quote_new(self):
         dlg = QuoteEditor(self, quote=None)
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             q = dlg.get_quote()
             if not q:
                 QMessageBox.warning(self, "Validation", "Client obligatoire.")
@@ -331,7 +331,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Devis", "Impossible de charger ce devis.")
             return
         dlg = QuoteEditor(self, quote=cur)
-        if dlg.exec() == dlg.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             q = dlg.get_quote()
             if not q:
                 QMessageBox.warning(self, "Validation", "Client obligatoire.")
