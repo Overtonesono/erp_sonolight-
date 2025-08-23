@@ -2,9 +2,10 @@ from __future__ import annotations
 from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QComboBox, QTextEdit, QDialogButtonBox,
-    QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QDoubleSpinBox
+    QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
+    QDoubleSpinBox, QLabel, QDateEdit
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDate
 
 from core.models.quote import Quote, QuoteLine
 from core.services.quote_service import QuoteService
@@ -81,6 +82,12 @@ class QuoteEditor(QDialog):
         # Champs
         self.cb_client = QComboBox()
         self.ed_notes = QTextEdit()
+        self.ed_event_date = QDateEdit()
+        self.ed_event_date.setCalendarPopup(True)
+        self.ed_event_date.setDate(QDate.currentDate())
+
+        # Totaux
+        self.lab_total = QLabel("Total TTC : 0.00 €")
 
         # Lignes
         self.tbl = QTableWidget(0, 6)
@@ -96,12 +103,14 @@ class QuoteEditor(QDialog):
 
         top = QFormLayout()
         top.addRow("Client", self.cb_client)
+        top.addRow("Date de l’évènement", self.ed_event_date)  # ✨ NOUVEAU
         top.addRow("Notes", self.ed_notes)
 
         bar = QHBoxLayout()
         bar.addWidget(btn_add)
         bar.addWidget(btn_del)
         bar.addStretch(1)
+        bar.addWidget(self.lab_total)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
@@ -122,6 +131,8 @@ class QuoteEditor(QDialog):
 
         if quote:
             self._fill_from_quote(quote)
+        else:
+            self._update_totals()
 
     # -------- UI helpers --------
     def _fill_from_quote(self, q: Quote):
@@ -129,13 +140,14 @@ class QuoteEditor(QDialog):
         idx = max(0, self.cb_client.findData(q.client_id))
         self.cb_client.setCurrentIndex(idx)
         self.ed_notes.setPlainText(q.notes or "")
+        if q.event_date:
+            self.ed_event_date.setDate(QDate(q.event_date.year, q.event_date.month, q.event_date.day))
         # lignes
         self._lines = [ln.model_copy(deep=True) for ln in q.lines]
         self._refresh_table()
 
     def _refresh_table(self):
         self.tbl.setRowCount(0)
-        # recalcul live
         qtmp = Quote(client_id=self.cb_client.currentData() or "", lines=[ln.model_copy(deep=True) for ln in self._lines])
         self.service.recalc_totals(qtmp)
         for ln in qtmp.lines:
@@ -147,8 +159,13 @@ class QuoteEditor(QDialog):
             self.tbl.setItem(r, 3, QTableWidgetItem(_money(ln.unit_price_ttc_cent)))
             self.tbl.setItem(r, 4, QTableWidgetItem(f"{ln.remise_pct:.0f}"))
             self.tbl.setItem(r, 5, QTableWidgetItem(_money(ln.total_line_ttc_cent)))
-
         self.tbl.resizeRowsToContents()
+        self._update_totals()
+
+    def _update_totals(self):
+        qtmp = Quote(client_id=self.cb_client.currentData() or "", lines=[ln.model_copy(deep=True) for ln in self._lines])
+        self.service.recalc_totals(qtmp)
+        self.lab_total.setText(f"Total TTC : {_money(qtmp.total_ttc_cent)}")
 
     def _add_line(self):
         dlg = _AddLineDialog(self, self.catalog_service)
@@ -170,18 +187,23 @@ class QuoteEditor(QDialog):
         if not client_id:
             return None
 
+        event_qdate = self.ed_event_date.date()
+        event_date = event_qdate.toPython()  # datetime.date
+
         if self._quote_orig:
             q = self._quote_orig.model_copy(deep=True)
             q.client_id = client_id
             q.notes = self.ed_notes.toPlainText().strip() or None
             q.lines = [ln.model_copy(deep=True) for ln in self._lines]
+            q.event_date = event_date
             self.service.recalc_totals(q)
             return q
 
         qnew = Quote(
             client_id=client_id,
             lines=[ln.model_copy(deep=True) for ln in self._lines],
-            notes=self.ed_notes.toPlainText().strip() or None
+            notes=self.ed_notes.toPlainText().strip() or None,
+            event_date=event_date
         )
         self.service.recalc_totals(qnew)
         return qnew
