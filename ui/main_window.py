@@ -19,6 +19,8 @@ from ui.widgets.product_form import ProductServiceForm
 from ui.widgets.quote_editor import QuoteEditor
 from ui.widgets.payment_dialog import PaymentDialog
 from core.services.workflow_service import WorkflowService
+from PySide6.QtWidgets import QProgressBar
+from core.services.calendar_service import CalendarService
 
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 
@@ -32,6 +34,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ERP Sonolight - Devis & Factures v1")
         self.resize(1280, 800)
         self.workflow = WorkflowService()
+        self.calendar_service = CalendarService()
 
         self.client_service = ClientService()
         self.catalog_service = CatalogService()
@@ -283,6 +286,9 @@ class MainWindow(QMainWindow):
         btn_refuse = QPushButton("Refuser devis")
         btn_pay_deposit = QPushButton("Enregistrer ACOMPTE (30%)")
         btn_pay_balance = QPushButton("Enregistrer SOLDE (70%)")
+        btn_calendar = QPushButton("Créer évènement (Agenda)")
+        bar2.addWidget(btn_calendar)
+        btn_calendar.clicked.connect(self._quote_create_calendar_event)
         bar2.addWidget(btn_refuse); bar2.addStretch(1)
         bar2.addWidget(btn_pay_deposit); bar2.addWidget(btn_pay_balance)
         root.addLayout(bar2)
@@ -341,6 +347,50 @@ class MainWindow(QMainWindow):
         if q.status == "VALIDATED": return 60
         if q.status == "FINALIZED": return 100
         return 0
+
+    def _apply_progress_style(self, q: Quote):
+        # Barre colorée selon statut
+        if q.status == "REFUSED":
+            css = "QProgressBar::chunk{background:#d9534f;} QProgressBar{text-align:center;}"
+        elif q.status == "FINALIZED":
+            css = "QProgressBar::chunk{background:#5cb85c;} QProgressBar{text-align:center;}"
+        elif q.status == "VALIDATED":
+            css = "QProgressBar::chunk{background:#8bc34a;} QProgressBar{text-align:center;}"
+        else:  # PENDING
+            css = "QProgressBar::chunk{background:#bdbdbd;} QProgressBar{text-align:center;}"
+        self.progress.setStyleSheet(css)
+    
+    def _update_controls_state(self, q: Optional[Quote]):
+        # Active/désactive boutons selon l'état
+        if not q:
+            for b in [
+                # remplace par tes références réelles si noms différents
+            ]:
+                pass
+            return
+        # Trouve les boutons depuis le layout (ou stocke des refs en self.* lors de la création)
+        # Exemple si tu les as gardés en self:
+        # self.btn_pay_deposit.setEnabled(q.status in ("PENDING",) and q.paid_deposit_cent() == 0)
+        # self.btn_pay_balance.setEnabled(q.status in ("PENDING","VALIDATED") and q.remaining_cent() > 0 and q.paid_deposit_cent() > 0)
+        # self.btn_refuse.setEnabled(q.status in ("PENDING",) and q.paid_total_cent() == 0)
+
+    def _quote_create_calendar_event(self):
+        qid = self._selected_quote_id()
+        if not qid:
+            QMessageBox.information(self, "Agenda", "Sélectionne un devis."); return
+        q = self.quote_service.get_by_id(qid)
+        if not q:
+            QMessageBox.warning(self, "Agenda", "Impossible de charger ce devis."); return
+        if not q.event_date:
+            QMessageBox.warning(self, "Agenda", "Ce devis n'a pas de date d'évènement."); return
+        client = self.client_map.get(q.client_id)
+        title = f"Prestation – {client.name if client else 'Client'} – {q.number}"
+        desc = f"Devis {q.number}. Total: {q.total_ttc_cent/100:.2f} €"
+        try:
+            msg = self.calendar_service.create_event_for_quote(title=title, date_only=q.event_date, description=desc)
+            QMessageBox.information(self, "Agenda", msg)
+        except Exception as e:
+            QMessageBox.warning(self, "Agenda", str(e))
     
     def _on_quote_selection_changed(self):
         self._refresh_invoices_for_selected_quote()
