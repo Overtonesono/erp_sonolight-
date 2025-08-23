@@ -10,6 +10,8 @@ class QuoteLine(BaseModel):
     item_id: Optional[str] = None
     item_type: Literal["product", "service"] = "service"
     label: str
+    # ✨ Nouveau : description détaillée
+    description: Optional[str] = None
     qty: float = 1.0
     unit_price_ttc_cent: int = 0
     remise_pct: float = 0.0
