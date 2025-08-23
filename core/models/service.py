@@ -1,4 +1,6 @@
+from __future__ import annotations
 from pydantic import BaseModel, Field
+from typing import Optional
 from .common import gen_id
 
 class Service(BaseModel):
@@ -10,3 +12,5 @@ class Service(BaseModel):
     price_ttc_cent: int
     unit: str = "prestation"
     active: bool = True
+    # ✨ Nouveau
+    description: Optional[str] = None
