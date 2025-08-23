@@ -115,11 +115,13 @@ class QuoteService:
         """
         1) Rend HTML via Jinja
         2) Tente PDF via WeasyPrint
-        3) Sinon tente PDF via wkhtmltopdf (pdfkit)
+        3) Tente PDF via wkhtmltopdf (pdfkit), avec ou sans chemin explicite
         4) Sinon garde HTML
         Retourne le chemin du fichier final.
         """
         from jinja2 import Environment, FileSystemLoader, select_autoescape
+        import traceback
+
         templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
         env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
         tpl = env.get_template("quote.html")
@@ -176,19 +178,36 @@ class QuoteService:
             weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path)
             return pdf_path
         except Exception:
+            # on n'interrompt pas : on tente wkhtmltopdf ensuite
             pass
 
         # 3) Tentative PDF via wkhtmltopdf (pdfkit)
         try:
             import pdfkit
-            wkhtml_path = (settings.get("pdf", {}) or {}).get("wkhtmltopdf_path")
-            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path) if wkhtml_path else None
             css_path = os.path.join(templates_dir, "stylesheet.css")
             pdf_path = base + ".pdf"
-            # options minimalistes; wkhtmltopdf est verbeux sans quiet
-            opts = {"quiet": ""}
-            pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
+
+            # options nécessaires sous Windows pour accéder au CSS local sans warning
+            opts = {
+                "quiet": "",
+                "enable-local-file-access": ""
+            }
+
+            # a) avec chemin explicite depuis settings.json
+            wkhtml_path = (settings.get("pdf", {}) or {}).get("wkhtmltopdf_path")
+            if wkhtml_path and os.path.exists(wkhtml_path):
+                config = pdfkit.configuration(wkhtmltopdf=wkhtml_path)
+                pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
+                return pdf_path
+
+            # b) sans config (si wkhtmltopdf est dans le PATH)
+            pdfkit.from_string(html, pdf_path, options=opts, css=css_path)
             return pdf_path
-        except Exception:
-            # 4) Retourne HTML si tout échoue
+
+        except Exception as e:
+            # 4) Retourne HTML et journalise l'erreur pour diagnostic
+            log_path = base + ".log"
+            with open(log_path, "w", encoding="utf-8") as lf:
+                lf.write("PDF generation error:\n")
+                lf.write(traceback.format_exc())
             return html_path
