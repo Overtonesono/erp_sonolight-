@@ -5,6 +5,7 @@ python-dateutil>=2.9
 
 # Génération PDF (HTML → PDF)
 weasyprint>=62.0
+pdfkit>=1.0.0
 
 # Google API (Agenda + OAuth2)
 google-api-python-client>=2.147.0
