@@ -13,6 +13,11 @@ QUOTES_JSON = os.path.join(DATA_DIR, "quotes.json")
 CLIENTS_JSON = os.path.join(DATA_DIR, "clients.json")
 SETTINGS_JSON = os.path.join(DATA_DIR, "settings.json")
 
+DEF_TERMS = (
+    "Conditions de paiement : 30% à l'acceptation du devis, 70% au plus tard le jour de l'évènement. "
+    "TVA non applicable, art. 293 B du CGI. Devis valable 30 jours."
+)
+
 def _load_json(path: str):
     if not os.path.exists(path): return None
     with open(path, "r", encoding="utf-8") as f:
@@ -110,28 +115,19 @@ class QuoteService:
         _dump_json(SETTINGS_JSON, settings)
         return number
 
-    # ---------- Export PDF/HTML ----------
+    # ---------- PDF ONLY ----------
     def export_quote_pdf(self, q: Quote, out_dir: Optional[str] = None) -> str:
-        """
-        1) Rend HTML via Jinja
-        2) Tente PDF via WeasyPrint
-        3) Tente PDF via wkhtmltopdf (pdfkit), avec ou sans chemin explicite
-        4) Sinon garde HTML
-        Retourne le chemin du fichier final.
-        """
         from jinja2 import Environment, FileSystemLoader, select_autoescape
-        import traceback
-
         templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
         env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
         tpl = env.get_template("quote.html")
 
-        clients = self.load_client_map()
-        client = clients.get(q.client_id)
+        clients = self.load_client_map(); client = clients.get(q.client_id)
         client_name = _slug(getattr(client, "name", "") or "Client")
-
         settings = _load_json(SETTINGS_JSON) or {}
         company = settings.get("company", {})
+        legal = settings.get("legal", {})
+        terms = legal.get("quote_terms") or DEF_TERMS
 
         def cent_to_eur(c: int) -> str:
             return f"{c/100:.2f} €"
@@ -139,11 +135,14 @@ class QuoteService:
         html = tpl.render(
             quote={
                 "number": q.number,
+                "event_date": q.event_date.isoformat() if q.event_date else None,
                 "lines": [
                     {
                         "label": ln.label,
+                        "description": ln.description or "",
                         "qty": ln.qty,
                         "unit_price_ttc": cent_to_eur(ln.unit_price_ttc_cent),
+                        "remise_pct": ln.remise_pct,
                         "total_ttc": cent_to_eur(ln.total_line_ttc_cent),
                     } for ln in q.lines
                 ],
@@ -157,57 +156,33 @@ class QuoteService:
                 "name": company.get("name", "Ma Société"),
                 "email": company.get("email", ""),
                 "address": company.get("address", ""),
+                "siret": company.get("siret", ""),
             },
+            terms=terms,
         )
 
-        exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports"))
+        exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports", "devis"))
         os.makedirs(exports_dir, exist_ok=True)
+        base_name = f"{q.number or q.id}_devis ({client_name})"; base = os.path.join(exports_dir, base_name)
+        pdf_path = base + ".pdf"
 
-        base_name = f"{q.number or q.id}_devis ({client_name})"
-        base = os.path.join(exports_dir, base_name)
-
-        # 1) Sauvegarde HTML (toujours)
-        html_path = base + ".html"
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
-
-        # 2) Tentative PDF via WeasyPrint
+        # Try WeasyPrint first
         try:
             import weasyprint
-            pdf_path = base + ".pdf"
-            weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path)
+            weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path, stylesheets=[weasyprint.CSS(os.path.join(templates_dir, "stylesheet.css"))])
             return pdf_path
         except Exception:
-            # on n'interrompt pas : on tente wkhtmltopdf ensuite
             pass
 
-        # 3) Tentative PDF via wkhtmltopdf (pdfkit)
+        # Fallback wkhtmltopdf via pdfkit
         try:
             import pdfkit
             css_path = os.path.join(templates_dir, "stylesheet.css")
-            pdf_path = base + ".pdf"
-
-            # options nécessaires sous Windows pour accéder au CSS local sans warning
-            opts = {
-                "quiet": "",
-                "enable-local-file-access": ""
-            }
-
-            # a) avec chemin explicite depuis settings.json
-            wkhtml_path = (settings.get("pdf", {}) or {}).get("wkhtmltopdf_path")
-            if wkhtml_path and os.path.exists(wkhtml_path):
-                config = pdfkit.configuration(wkhtmltopdf=wkhtml_path)
-                pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
-                return pdf_path
-
-            # b) sans config (si wkhtmltopdf est dans le PATH)
-            pdfkit.from_string(html, pdf_path, options=opts, css=css_path)
+            settings_pdf = settings.get("pdf", {}) if settings else {}
+            wkhtml_path = settings_pdf.get("wkhtmltopdf_path")
+            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path) if wkhtml_path else None
+            opts = {"quiet": "", "enable-local-file-access": ""}
+            pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
             return pdf_path
-
         except Exception as e:
-            # 4) Retourne HTML et journalise l'erreur pour diagnostic
-            log_path = base + ".log"
-            with open(log_path, "w", encoding="utf-8") as lf:
-                lf.write("PDF generation error:\n")
-                lf.write(traceback.format_exc())
-            return html_path
+            raise RuntimeError(f"Échec génération PDF: {e}")
