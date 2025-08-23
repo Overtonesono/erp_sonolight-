@@ -166,25 +166,35 @@ class InvoiceService:
 
     # ----------- export PDF ----------
     def export_invoice_pdf(self, inv: Invoice, out_dir: Optional[str] = None) -> str:
-        """
-        1) HTML via Jinja
-        2) PDF via WeasyPrint
-        3) Fallback wkhtmltopdf (pdfkit)
-        4) Sinon HTML
-        """
         from jinja2 import Environment, FileSystemLoader, select_autoescape
-        import traceback
-
         templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
         env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
         tpl = env.get_template("invoice.html")
 
-        client_name = _slug(self._client_name(inv.client_id))
-        settings = _load_json(SETTINGS_JSON) or {}
-        company = settings.get("company", {})
+        def _load_json(path: str):
+            if not os.path.exists(path): return None
+            try:
+                with open(path, "r", encoding="utf-8") as f: return json.load(f)
+            except Exception: return None
 
         def cent_to_eur(c: int) -> str:
             return f"{c/100:.2f} €"
+
+        settings = _load_json(SETTINGS_JSON) or {}
+        company = settings.get("company", {})
+
+        # client name helper
+        cname = "Client"
+        data = _load_json(CLIENTS_JSON) or []
+        from pydantic import ValidationError
+        from core.models.client import Client
+        for d in data:
+            try:
+                c = Client(**d)
+                if c.id == inv.client_id:
+                    cname = c.name; break
+            except ValidationError:
+                continue
 
         html = tpl.render(
             invoice={
@@ -200,51 +210,39 @@ class InvoiceService:
                 ],
                 "total_ttc": cent_to_eur(inv.total_ttc_cent),
             },
-            client={"name": self._client_name(inv.client_id)},
+            client={"name": cname},
             company={
                 "name": company.get("name", "Ma Société"),
                 "email": company.get("email", ""),
                 "address": company.get("address", ""),
+                "siret": company.get("siret", ""),
             },
         )
 
-        exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports"))
+        exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports", "factures"))
         os.makedirs(exports_dir, exist_ok=True)
-
         type_code = {"ACOMPTE": "FAC-A", "SOLDE": "FAC-S", "FINALE": "FAC-F"}.get(inv.type, "FAC-X")
-        base_name = f"{type_code}-{(inv.number or inv.id).split('-')[-1]} ({client_name})"
-        base = os.path.join(exports_dir, base_name)
+        tail = (inv.number or inv.id).split("-")[-1]
+        base_name = f"{type_code}-{tail} ({cname})"; base = os.path.join(exports_dir, base_name)
+        pdf_path = base + ".pdf"
 
-        html_path = base + ".html"
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
-
-        # WeasyPrint
+        # Try WeasyPrint
         try:
             import weasyprint
-            pdf_path = base + ".pdf"
-            weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path)
+            weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path, stylesheets=[weasyprint.CSS(os.path.join(templates_dir, "stylesheet.css"))])
             return pdf_path
         except Exception:
             pass
 
-        # wkhtmltopdf
+        # Fallback wkhtmltopdf
         try:
             import pdfkit
             css_path = os.path.join(templates_dir, "stylesheet.css")
-            pdf_path = base + ".pdf"
+            settings_pdf = settings.get("pdf", {}) if settings else {}
+            wkhtml_path = settings_pdf.get("wkhtmltopdf_path")
+            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path) if wkhtml_path else None
             opts = {"quiet": "", "enable-local-file-access": ""}
-            wkhtml_path = (settings.get("pdf", {}) or {}).get("wkhtmltopdf_path")
-            if wkhtml_path and os.path.exists(wkhtml_path):
-                config = pdfkit.configuration(wkhtmltopdf=wkhtml_path)
-                pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
-            else:
-                pdfkit.from_string(html, pdf_path, options=opts, css=css_path)
+            pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
             return pdf_path
-        except Exception:
-            log_path = base + ".log"
-            import traceback
-            with open(log_path, "w", encoding="utf-8") as lf:
-                lf.write("PDF generation error:\n")
-                lf.write(traceback.format_exc())
-            return html_path
+        except Exception as e:
+            raise RuntimeError(f"Échec génération PDF: {e}")
