@@ -1,8 +1,15 @@
 from __future__ import annotations
 import json, os, tempfile, threading
 from typing import Any, Callable
+from datetime import datetime, date
 
 _lock = threading.Lock()
+
+def _json_default(o: Any):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    # Laisse json lever une erreur pour les autres types non gérés
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 
 class JsonRepository:
     def __init__(self, file_path: str, key: str = "id"):
@@ -25,14 +32,16 @@ class JsonRepository:
         tmp_fd, tmp_path = tempfile.mkstemp(prefix="tmp", suffix=".json", dir=os.path.dirname(self.file_path))
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_default)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, self.file_path)
         finally:
             if os.path.exists(tmp_path):
-                try: os.remove(tmp_path)
-                except: pass
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
 
     def list_all(self) -> list[dict]:
         return self._read()
@@ -46,7 +55,7 @@ class JsonRepository:
     def update(self, item: dict):
         with _lock:
             data = self._read()
-            idx = next((i for i, d in enumerate(data) if d.get(self.key)==item.get(self.key)), None)
+            idx = next((i for i, d in enumerate(data) if d.get(self.key) == item.get(self.key)), None)
             if idx is None:
                 raise KeyError("Item not found")
             data[idx] = item
@@ -54,7 +63,7 @@ class JsonRepository:
 
     def delete(self, item_id: str):
         with _lock:
-            data = [d for d in self._read() if d.get(self.key)!=item_id]
+            data = [d for d in self._read() if d.get(self.key) != item_id]
             self._write(data)
 
     def find(self, predicate: Callable[[dict], bool]) -> list[dict]:
