@@ -16,3 +16,6 @@
     "default_calendar_id": "primary"
   }
 }
+{
+  "pdf": { "wkhtmltopdf_path": "C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe" }
+}
