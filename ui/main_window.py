@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (
         QMainWindow, QWidget, QTabWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox
-    )
-    from PySide6.QtCore import Qt
-    import json, os
+)
+from PySide6.QtCore import Qt
+import json, os
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data")
     DATA_DIR = os.path.abspath(DATA_DIR)
