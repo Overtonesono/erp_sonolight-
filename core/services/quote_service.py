@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, json
+import os, json, re
 from typing import List, Optional
 from math import isfinite
 from pydantic import ValidationError
@@ -30,6 +30,13 @@ def money_cent(x: float | int) -> int:
     except Exception:
         return 0
 
+def _slug(text: str) -> str:
+    # simplifié: remplace tout ce qui n’est pas alphanumérique/espaces/._- par '_'
+    text = text.strip()
+    text = re.sub(r"[\\/:*?\"<>|\n\r\t]", "_", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
 class QuoteService:
     def __init__(self, path: str = QUOTES_JSON):
         self.repo = JsonRepository(path, key="id")
@@ -45,10 +52,8 @@ class QuoteService:
         return out
 
     def add_quote(self, q: Quote) -> Quote:
-        # numéro auto si manquant
         if not q.number:
             q.number = self._next_quote_number()
-        # calcule total
         self.recalc_totals(q)
         self.repo.add(q.model_dump())
         return q
@@ -108,22 +113,24 @@ class QuoteService:
     # ---------- Export PDF/HTML ----------
     def export_quote_pdf(self, q: Quote, out_dir: Optional[str] = None) -> str:
         """
-        Rend un PDF si WeasyPrint dispo, sinon HTML. Retourne le chemin du fichier généré.
+        1) Rend HTML via Jinja
+        2) Tente PDF via WeasyPrint
+        3) Sinon tente PDF via wkhtmltopdf (pdfkit)
+        4) Sinon garde HTML
+        Retourne le chemin du fichier final.
         """
         from jinja2 import Environment, FileSystemLoader, select_autoescape
         templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
-        env = Environment(
-            loader=FileSystemLoader(templates_dir),
-            autoescape=select_autoescape()
-        )
+        env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
         tpl = env.get_template("quote.html")
 
         clients = self.load_client_map()
         client = clients.get(q.client_id)
+        client_name = _slug(getattr(client, "name", "") or "Client")
 
         settings = _load_json(SETTINGS_JSON) or {}
         company = settings.get("company", {})
-        # helpers affichage
+
         def cent_to_eur(c: int) -> str:
             return f"{c/100:.2f} €"
 
@@ -153,16 +160,35 @@ class QuoteService:
 
         exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports"))
         os.makedirs(exports_dir, exist_ok=True)
-        base = os.path.join(exports_dir, f"{q.number or q.id}_devis")
+
+        base_name = f"{q.number or q.id}_devis ({client_name})"
+        base = os.path.join(exports_dir, base_name)
+
+        # 1) Sauvegarde HTML (toujours)
         html_path = base + ".html"
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html)
 
-        # tentative PDF si WeasyPrint dispo
+        # 2) Tentative PDF via WeasyPrint
         try:
             import weasyprint
             pdf_path = base + ".pdf"
             weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path)
             return pdf_path
         except Exception:
+            pass
+
+        # 3) Tentative PDF via wkhtmltopdf (pdfkit)
+        try:
+            import pdfkit
+            wkhtml_path = (settings.get("pdf", {}) or {}).get("wkhtmltopdf_path")
+            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path) if wkhtml_path else None
+            css_path = os.path.join(templates_dir, "stylesheet.css")
+            pdf_path = base + ".pdf"
+            # options minimalistes; wkhtmltopdf est verbeux sans quiet
+            opts = {"quiet": ""}
+            pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
+            return pdf_path
+        except Exception:
+            # 4) Retourne HTML si tout échoue
             return html_path
