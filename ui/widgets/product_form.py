@@ -27,90 +27,68 @@ def _format_price_cent_to_eur(c: Optional[int]) -> str:
 
 
 class ProductServiceForm(QDialog):
-    def __init__(self, parent=None, item=None, item_type: str = "product"):
-        """
-        item_type: "product" ou "service"
-        item: Product ou Service existant (édition) ou None (création).
-        """
+    def __init__(self, parent=None, item: Optional[object] = None, item_type: str = "product"):
         super().__init__(parent)
-        self.setWindowTitle("Catalogue")
+        self.setWindowTitle("Produit/Service")
         self.setModal(True)
-        self._item_type = item_type
-        self._item_orig = item
-
+        self.item_type = item_type
+        
+        
         self.ed_ref = QLineEdit()
         self.ed_label = QLineEdit()
         self.ed_price = QLineEdit()
         self.ed_unit = QLineEdit()
-        self.ed_desc = QTextEdit()
         self.cb_active = QCheckBox("Actif")
-
+        self.cb_active.setChecked(True)
+        # ✨ Nouveau
+        self.ed_desc = QTextEdit()
+        self.ed_desc.setPlaceholderText("Description détaillée pour le devis/facture…")
+        
+        
         form = QFormLayout()
-        form.addRow("Référence (obligatoire)", self.ed_ref)
-        form.addRow("Libellé (obligatoire)", self.ed_label)
-        form.addRow("Prix TTC (€)", self.ed_price)
+        form.addRow("Référence", self.ed_ref)
+        form.addRow("Libellé", self.ed_label)
+        form.addRow("Prix TTC (centimes)", self.ed_price)
         form.addRow("Unité", self.ed_unit)
         form.addRow("Description", self.ed_desc)
         form.addRow("", self.cb_active)
-        form.addRow("", QLabel("💡 Saisie du prix en euros (ex: 120 ou 120.00). Stockage interne en centimes."))
-
+        
+        
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-
+        
+        
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(btns)
-
+        
+        
+        # Remplissage si édition
         if item is not None:
-            self._fill_from_item(item)
-
-    def _fill_from_item(self, item):
-        self.ed_ref.setText(item.ref or "")
-        self.ed_label.setText(item.label or "")
-        self.ed_price.setText(_format_price_cent_to_eur(item.price_ttc_cent))
-        self.ed_unit.setText(item.unit or "")
-        self.ed_desc.setPlainText(item.description or "")
-        self.cb_active.setChecked(bool(item.active))
-
-    def get_item(self):
-        # validations minimum
-        ref = self.ed_ref.text().strip()
-        label = self.ed_label.text().strip()
-        if not ref or not label:
-            if not ref:
-                self.ed_ref.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-            elif not label:
-                self.ed_label.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-            return None
-
-        price_cent = _parse_price_eur_to_cent(self.ed_price.text())
-        if price_cent is None:
+            self.ed_ref.setText(getattr(item, "ref", ""))
+            self.ed_label.setText(getattr(item, "label", ""))
+            self.ed_price.setText(str(getattr(item, "price_ttc_cent", 0)))
+            self.ed_unit.setText(getattr(item, "unit", ""))
+            self.cb_active.setChecked(bool(getattr(item, "active", True)))
+            self.ed_desc.setPlainText(getattr(item, "description", "") or "")
+    
+    
+    def get_item(self) -> Optional[object]:
+        try:
+            price_cent = int(self.ed_price.text().strip() or 0)
+        except ValueError:
             price_cent = 0
-
-        if self._item_orig:
-            it = self._item_orig.model_copy(deep=True)
-            it.ref = ref
-            it.label = label
-            it.description = self.ed_desc.toPlainText().strip() or None
-            it.price_ttc_cent = price_cent
-            it.unit = self.ed_unit.text().strip() or it.unit
-            it.active = self.cb_active.isChecked()
-            return it
-
-        if self._item_type == "service":
-            return Service(
-                ref=ref, label=label,
-                description=self.ed_desc.toPlainText().strip() or None,
-                price_ttc_cent=price_cent,
-                unit=self.ed_unit.text().strip() or "prestation",
-                active=self.cb_active.isChecked(),
-            )
-        else:
-            return Product(
-                ref=ref, label=label,
-                description=self.ed_desc.toPlainText().strip() or None,
-                price_ttc_cent=price_cent,
-                unit=self.ed_unit.text().strip() or "pièce",
-                active=self.cb_active.isChecked(),
-            )
+        data = dict(
+            ref=self.ed_ref.text().strip(),
+            label=self.ed_label.text().strip(),
+            price_ttc_cent=price_cent,
+            unit=self.ed_unit.text().strip() or ("heure" if self.item_type == "service" else "unité"),
+            active=self.cb_active.isChecked(),
+            description=(self.ed_desc.toPlainText().strip() or None),
+        )
+        if not data["ref"] or not data["label"]:
+            return None
+        if self.item_type == "service":
+            return Service(**data)
+        return Product(**data)
