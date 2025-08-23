@@ -77,36 +77,48 @@ class InvoiceService:
         return inv
 
     # ----------- génération -----------
-    def gen_deposit(self, q: Quote, pct: Optional[float] = None) -> Invoice:
-        s = _load_json(SETTINGS_JSON) or {}
-        default_pct = float((s.get("acompte_pct") or 30))
-        deposit_pct = float(pct if pct is not None else default_pct)
-        deposit_pct = max(0.0, min(100.0, deposit_pct))
-        amount = int(round(q.total_ttc_cent * (deposit_pct / 100.0)))
+    def gen_deposit(self, q: Quote, pct: Optional[float] = None, explicit_amount: Optional[int] = None) -> Invoice:
+        if explicit_amount is not None:
+            amount = int(explicit_amount)
+        else:
+            s = _load_json(SETTINGS_JSON) or {}
+            default_pct = float((s.get("acompte_pct") or 30))
+            deposit_pct = float(pct if pct is not None else default_pct)
+            deposit_pct = max(0.0, min(100.0, deposit_pct))
+            amount = int(round(q.total_ttc_cent * (deposit_pct / 100.0)))
 
         inv = Invoice(
-            type="ACOMPTE",
-            status="ISSUED",
-            quote_id=q.id,
-            client_id=q.client_id,
-            lines=[InvoiceLine(label=f"Acompte {deposit_pct:.0f}% sur devis {q.number}", qty=1.0,
+            type="ACOMPTE", status="ISSUED",
+            quote_id=q.id, client_id=q.client_id,
+            lines=[InvoiceLine(label=f"Acompte sur devis {q.number}", qty=1.0,
                                unit_price_ttc_cent=amount, total_line_ttc_cent=amount)],
             total_ttc_cent=amount,
             notes="TVA non applicable, art. 293 B du CGI."
         )
         return self.add_invoice(inv)
 
-    def gen_balance(self, q: Quote) -> Invoice:
-        paid_deposits = sum(i.total_ttc_cent for i in self.list_by_quote(q.id) if i.type == "ACOMPTE")
-        remaining = max(0, q.total_ttc_cent - paid_deposits)
+    def gen_balance(self, q: Quote, explicit_amount: Optional[int] = None) -> Invoice:
+        if explicit_amount is not None:
+            remaining = int(explicit_amount)
+        else:
+            remaining = q.remaining_cent()
         inv = Invoice(
-            type="SOLDE",
-            status="ISSUED",
-            quote_id=q.id,
-            client_id=q.client_id,
+            type="SOLDE", status="ISSUED",
+            quote_id=q.id, client_id=q.client_id,
             lines=[InvoiceLine(label=f"Solde sur devis {q.number}", qty=1.0,
                                unit_price_ttc_cent=remaining, total_line_ttc_cent=remaining)],
             total_ttc_cent=remaining,
+            notes="TVA non applicable, art. 293 B du CGI."
+        )
+        return self.add_invoice(inv)
+
+    def gen_final(self, q: Quote) -> Invoice:
+        inv = Invoice(
+            type="FINALE", status="ISSUED",
+            quote_id=q.id, client_id=q.client_id,
+            lines=[InvoiceLine(label=f"Facture finale – devis {q.number}", qty=1.0,
+                               unit_price_ttc_cent=0, total_line_ttc_cent=0)],
+            total_ttc_cent=0,
             notes="TVA non applicable, art. 293 B du CGI."
         )
         return self.add_invoice(inv)
