@@ -245,84 +245,59 @@ class InvoiceService:
         return "Client"
 
     # ----------- export PDF ----------
-    def export_invoice_pdf(self, inv: Invoice, out_dir: Optional[str] = None) -> str:
-        from jinja2 import Environment, FileSystemLoader, select_autoescape
-        templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
-        env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
-        tpl = env.get_template("invoice.html")
+def export_invoice_pdf(self, inv) -> Path:
+    """
+    Génére le PDF de facture sans créer d'HTML intermédiaire.
+    Essaie wkhtmltopdf (pdfkit) en priorité, sinon fallback WeasyPrint.
+    """
+    # 1) Rendu HTML en mémoire (on suppose que tu as la méthode _render_invoice_html)
+    html = self._render_invoice_html(inv)
 
-        def _load_json(path: str):
-            if not os.path.exists(path): return None
-            try:
-                with open(path, "r", encoding="utf-8") as f: return json.load(f)
-            except Exception: return None
+    # 2) Prépare sortie
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    invoices_dir = EXPORTS_DIR / "factures"
+    invoices_dir.mkdir(parents=True, exist_ok=True)
 
-        def cent_to_eur(c: int) -> str:
-            return f"{c/100:.2f} €"
+    # client_name pour nom fichier (si tu as un map client dans ce service, adapte au besoin)
+    client_name = ""
+    try:
+        clients = self.load_client_map()  # si dispo dans ce service (sinon vire ce bloc)
+        client = clients.get(getattr(inv, "client_id", None))
+        client_name = getattr(client, "name", "") or ""
+    except Exception:
+        pass
 
-        settings = _load_json(SETTINGS_JSON) or {}
-        company = settings.get("company", {})
+    def _slug(s: str) -> str:
+        import re
+        s = (s or "").strip()
+        s = re.sub(r'[\\/:*?"<>|\n\r\t]', "_", s)
+        s = re.sub(r"\s+", " ", s)
+        return s
 
-        # client name helper
-        cname = "Client"
-        data = _load_json(CLIENTS_JSON) or []
-        from pydantic import ValidationError
-        from core.models.client import Client
-        for d in data:
-            try:
-                c = Client(**d)
-                if c.id == inv.client_id:
-                    cname = c.name; break
-            except ValidationError:
-                continue
+    safe_client = _slug(client_name) or "Client"
+    number = getattr(inv, "number", None) or getattr(inv, "id", "INV")
+    filename = f"{number}_facture_{safe_client}.pdf"
+    out_path = invoices_dir / filename
 
-        html = tpl.render(
-            invoice={
-                "number": inv.number,
-                "type": inv.type,
-                "lines": [
-                    {
-                        "label": ln.label,
-                        "qty": ln.qty,
-                        "unit_price_ttc": cent_to_eur(ln.unit_price_ttc_cent),
-                        "total_ttc": cent_to_eur(ln.total_line_ttc_cent),
-                    } for ln in inv.lines
-                ],
-                "total_ttc": cent_to_eur(inv.total_ttc_cent),
-            },
-            client={"name": cname},
-            company={
-                "name": company.get("name", "Ma Société"),
-                "email": company.get("email", ""),
-                "address": company.get("address", ""),
-                "siret": company.get("siret", ""),
-            },
-        )
+    base_url = str(TEMPLATES_DIR.resolve())
 
-        exports_dir = out_dir or os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "exports", "factures"))
-        os.makedirs(exports_dir, exist_ok=True)
-        type_code = {"ACOMPTE": "FAC-A", "SOLDE": "FAC-S", "FINALE": "FAC-F"}.get(inv.type, "FAC-X")
-        tail = (inv.number or inv.id).split("-")[-1]
-        base_name = f"{type_code}-{tail} ({cname})"; base = os.path.join(exports_dir, base_name)
-        pdf_path = base + ".pdf"
-
-        # Try WeasyPrint
+    # 3) wkhtmltopdf d'abord
+    wkhtml = _find_wkhtmltopdf()
+    if wkhtml:
         try:
-            import weasyprint
-            weasyprint.HTML(string=html, base_url=templates_dir).write_pdf(pdf_path, stylesheets=[weasyprint.CSS(os.path.join(templates_dir, "stylesheet.css"))])
-            return pdf_path
-        except Exception:
-            pass
-
-        # Fallback wkhtmltopdf
-        try:
-            import pdfkit
-            css_path = os.path.join(templates_dir, "stylesheet.css")
-            settings_pdf = settings.get("pdf", {}) if settings else {}
-            wkhtml_path = settings_pdf.get("wkhtmltopdf_path")
-            config = pdfkit.configuration(wkhtmltopdf=wkhtml_path) if wkhtml_path else None
-            opts = {"quiet": "", "enable-local-file-access": ""}
-            pdfkit.from_string(html, pdf_path, options=opts, configuration=config, css=css_path)
-            return pdf_path
+            config = pdfkit.configuration(wkhtmltopdf=wkhtml)
+            options = {
+                "enable-local-file-access": None,
+                "quiet": "",
+                "encoding": "UTF-8",
+            }
+            css_path = str((TEMPLATES_DIR / "stylesheet.css").resolve())
+            pdfkit.from_string(html, str(out_path), options=options, configuration=config, css=css_path)
+            return out_path
         except Exception as e:
-            raise RuntimeError(f"Échec génération PDF: {e}")
+            import logging
+            logging.getLogger(__name__).warning("Échec wkhtmltopdf (%s). Fallback WeasyPrint...", e)
+
+    # 4) Fallback WeasyPrint
+    _render_pdf_with_weasyprint(html, out_path, base_url=base_url)
+    return out_path
