@@ -323,19 +323,18 @@ class QuoteService:
     def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
         """
         Génère un PDF de devis dans exports/devis/<NUMERO>.pdf
-        - Tente WeasyPrint en priorité.
-        - Fallback sur wkhtmltopdf via pdfkit si dispo.
-        - Sinon lève une erreur claire (aucun HTML n’est écrit).
+        - Tente WeasyPrint.
+        - Si échec (ImportError, OSError, etc.), fallback vers wkhtmltopdf via pdfkit.
+        - Si aucun backend dispo: lève RuntimeError (pas d’HTML écrit).
         """
         from datetime import datetime as _dt
         from pathlib import Path
-        import tempfile, os
+        import os, tempfile
 
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
         created_str = getattr(q, "created_at", None)
         created_fmt = created_str.strftime("%Y-%m-%d") if hasattr(created_str, "strftime") else _dt.now().strftime("%Y-%m-%d")
-
         client_id = getattr(q, "client_id", None)
         client_name = f"Client {client_id or ''}".strip()
 
@@ -361,7 +360,6 @@ class QuoteService:
                 f"<td style='text-align:right'>{_cent_to_str(total)}</td>"
                 f"</tr>"
             )
-
         total_ttc = int(getattr(q, "total_ttc_cent", 0) or 0)
         total_ht = int(getattr(q, "total_ht_cent", total_ttc) or 0)
 
@@ -425,23 +423,22 @@ class QuoteService:
 </body>
 </html>"""
 
-        # Chemin de sortie : exports/devis/<NUMERO>.pdf
         project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / "exports" / "devis"
+        out_dir = project_root / "exports" / "devis"   # <-- dossier demandé
         out_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = out_dir / f"{number}.pdf"
 
-        # 1) WeasyPrint
+        # 1) WeasyPrint (catch large: ImportError, OSError, etc.)
         try:
             from weasyprint import HTML  # type: ignore
             HTML(string=html, base_url=str(project_root)).write_pdf(str(pdf_path))
             return str(pdf_path)
-        except ImportError:
-            pass
+        except Exception:
+            pass  # on tente pdfkit
 
-        # 2) wkhtmltopdf via pdfkit (pas d'écriture HTML persistante)
+        # 2) wkhtmltopdf via pdfkit (fichier HTML temporaire, supprimé après)
         try:
-            import pdfkit, tempfile
+            import pdfkit
             with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as tmp:
                 tmp.write(html)
                 tmp_path = tmp.name
@@ -456,8 +453,11 @@ class QuoteService:
         except Exception:
             pass
 
-        # 3) Rien de dispo → erreur claire
+        # 3) Aucun backend dispo
         raise RuntimeError(
-            "Aucun moteur PDF disponible. Installez soit WeasyPrint (pip install weasyprint), "
-            "soit wkhtmltopdf + pdfkit (wkhtmltopdf installé puis pip install pdfkit)."
+            "Impossible de générer le PDF : WeasyPrint indisponible et wkhtmltopdf/pdfkit non trouvés.\n"
+            "Solutions Windows :\n"
+            "  • Option A (recommandée) : installer wkhtmltopdf puis `pip install pdfkit`.\n"
+            "  • Option B : installer toutes les dépendances WeasyPrint (GTK/Pango)."
         )
+
