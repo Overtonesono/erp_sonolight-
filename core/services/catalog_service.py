@@ -94,16 +94,36 @@ class CatalogService:
     # ---------- Helpers ---------- #
 
     def _parse_price_cents(self, payload: Dict[str, Any]) -> int:
-        """Convertit price_eur → price_cents si présent, sinon conserve centimes."""
+        """Convertit price_eur → price_cents si présent, sinon essaie tous les anciens champs."""
+        # 1) priorité au champ euros (édition UI)
         if "price_eur" in payload and payload["price_eur"] not in (None, ""):
             try:
                 val = float(str(payload["price_eur"]).replace(",", "."))
-                return int(round(val * 100))
+                return max(0, int(round(val * 100)))
             except Exception:
-                return 0
-        return int(payload.get("price_cents") or 0)
+                pass
+
+        # 2) anciens champs en centimes (json hérités)
+        for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
+            if k in payload and payload[k] not in (None, ""):
+                try:
+                    return max(0, int(payload[k]))
+                except Exception:
+                    pass
+
+        # 3) anciens champs en euros string/float
+        for k in ("price", "price_eur"):
+            if k in payload and payload[k] not in (None, ""):
+                try:
+                    val = float(str(payload[k]).replace(",", "."))
+                    return max(0, int(round(val * 100)))
+                except Exception:
+                    pass
+
+        return 0
 
     def _ensure_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalise avant écriture: label, unit, price_cents depuis price_eur/anciens champs."""
         name = payload.get("name") or ""
         if not payload.get("label"):
             payload["label"] = name
@@ -113,8 +133,14 @@ class CatalogService:
         return payload
 
     def _hydrate(self, d: Dict[str, Any], model: Type[T]) -> T:
+        """Hydrate un dict JSON en objet modèle, en reconstruisant price_cents si besoin."""
         if d is None:
             raise ValueError("Object not found")
+        # Reconstruire price_cents depuis tous les champs possibles si absent/0
+        pc = d.get("price_cents")
+        if pc in (None, "", 0):
+            d = {**d, "price_cents": self._parse_price_cents(d)}
+        # Création objet
         if _HAS_PYDANTIC and hasattr(model, "model_validate"):
             obj: T = model.model_validate(d)  # type: ignore[attr-defined]
         else:
