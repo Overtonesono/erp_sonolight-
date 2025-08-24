@@ -1,23 +1,31 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 try:
     # pydantic v2
     from pydantic import BaseModel
+    _HAS_PYDANTIC = True
 except Exception:  # pragma: no cover
+    _HAS_PYDANTIC = False
+
     class BaseModel:  # type: ignore
-        def model_dump(self):
+        def __init__(self, **data):
+            for k, v in data.items():
+                setattr(self, k, v)
+
+        def model_dump(self) -> Dict[str, Any]:
             return dict(self.__dict__)
 
-# Repo JSON générique
+
 from core.storage.json_repo import JsonRepository
 
 
 class Service(BaseModel):
     id: Optional[str] = None
-    name: str
+    ref: Optional[str] = None        # <— pour l’UI (p.ref)
+    name: str = ""
     description: Optional[str] = None
     price_cents: int = 0
     active: bool = True
@@ -25,17 +33,21 @@ class Service(BaseModel):
 
 class Product(BaseModel):
     id: Optional[str] = None
-    name: str
+    ref: Optional[str] = None        # <— pour l’UI (p.ref)
+    name: str = ""
     description: Optional[str] = None
     price_cents: int = 0
     active: bool = True
 
 
+T = TypeVar("T", bound=BaseModel)
+
+
 class CatalogService:
     """
     Orchestrateur Produits & Services.
-    Si aucun repo n'est fourni, crée automatiquement:
-      data/services.json et data/products.json
+    - Si aucun repo n'est fourni, crée automatiquement data/services.json et data/products.json
+    - Hydrate les enregistrements JSON en objets Product/Service (l’UI peut faire p.ref, p.name, etc.)
     """
 
     def __init__(
@@ -54,10 +66,24 @@ class CatalogService:
             base / "products.json", entity_name="product", key="id"
         )
 
-    # -------- Services -------- #
+    # ---------- Helpers ---------- #
 
-    def list_services(self) -> List[Dict[str, Any]]:
-        return self.services_repo.list_all()
+    def _hydrate_list(self, rows: List[Dict[str, Any]], model: Type[T]) -> List[T]:
+        items: List[T] = []
+        for d in rows:
+            if _HAS_PYDANTIC and hasattr(model, "model_validate"):
+                # pydantic v2
+                obj = model.model_validate(d)  # type: ignore[attr-defined]
+            else:
+                obj = model(**d)  # type: ignore[call-arg]
+            items.append(obj)
+        return items
+
+    # ---------- Services ---------- #
+
+    def list_services(self) -> List[Service]:
+        rows = self.services_repo.list_all()
+        return self._hydrate_list(rows, Service)
 
     def add_service(self, s: Service) -> Dict[str, Any]:
         payload = s.model_dump() if hasattr(s, "model_dump") else dict(s)  # type: ignore
@@ -74,10 +100,11 @@ class CatalogService:
     def delete_service(self, service_id: str) -> bool:
         return self.services_repo.delete(service_id)
 
-    # -------- Produits -------- #
+    # ---------- Produits ---------- #
 
-    def list_products(self) -> List[Dict[str, Any]]:
-        return self.products_repo.list_all()
+    def list_products(self) -> List[Product]:
+        rows = self.products_repo.list_all()
+        return self._hydrate_list(rows, Product)
 
     def add_product(self, p: Product) -> Dict[str, Any]:
         payload = p.model_dump() if hasattr(p, "model_dump") else dict(p)  # type: ignore
