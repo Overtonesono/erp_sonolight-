@@ -1,86 +1,83 @@
 from __future__ import annotations
-from typing import List, Optional
-import os
 
-from pydantic import ValidationError
+from typing import Any, Dict, List, Optional
 
-from core.models.product import Product
-from core.models.service import Service
-from core.storage.repo import JsonRepository
+try:
+    # pydantic v2
+    from pydantic import BaseModel
+except Exception:  # pragma: no cover
+    class BaseModel:  # type: ignore
+        def model_dump(self):
+            return dict(self.__dict__)
 
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data"))
-PRODUCTS_JSON = os.path.join(DATA_DIR, "products.json")
-SERVICES_JSON = os.path.join(DATA_DIR, "services.json")
+class Service(BaseModel):  # modèle simple minimal (remplace par ton vrai modèle si déjà défini)
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    price_cents: int = 0
+    active: bool = True
+
+
+class Product(BaseModel):  # idem
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    price_cents: int = 0
+    active: bool = True
 
 
 class CatalogService:
-    def __init__(self, products_path: str = PRODUCTS_JSON, services_path: str = SERVICES_JSON):
-        self.products_repo = JsonRepository(products_path, key="id")
-        self.services_repo = JsonRepository(services_path, key="id")
+    """
+    Orchestration pour Produits & Services, au-dessus de JsonRepository.
+    Attendu: repo expose add()/update()/delete()/list_all()
+    """
 
-    # -------- Produits --------
-    def list_products(self) -> List[Product]:
-        items = self.products_repo.list_all()
-        out: List[Product] = []
-        for d in items:
-            try:
-                out.append(Product(**d))
-            except ValidationError:
-                continue
-        return out
+    def __init__(self, services_repo, products_repo) -> None:
+        self.services_repo = services_repo
+        self.products_repo = products_repo
 
-    def add_product(self, p: Product) -> Product:
-        self.products_repo.add(p.model_dump())
-        return p
+    # -------- Services -------- #
 
-    def update_product(self, s) -> None:
-        if not getattr(s, "id", None)
-            self.products_repo.update(p.model_dump())
-            return p
-        self.products_repo.update(p.model_dump())
+    def list_services(self) -> List[Dict[str, Any]]:
+        return self.services_repo.list_all()
 
-    def delete_product(self, product_id: str) -> None:
-        self.products_repo.delete(product_id)
+    def add_service(self, s: Service) -> Dict[str, Any]:
+        # accepte BaseModel ou dict
+        payload = s.model_dump() if hasattr(s, "model_dump") else dict(s)  # type: ignore
+        if payload.get("price_cents") is None:
+            payload["price_cents"] = 0
+        return self.services_repo.add(payload)
 
-    def get_product(self, product_id: str) -> Optional[Product]:
-        matches = self.products_repo.find(lambda d: d.get("id") == product_id)
-        if not matches:
-            return None
-        try:
-            return Product(**matches[0])
-        except ValidationError:
-            return None
+    def update_service(self, s: Service) -> Dict[str, Any]:
+        """
+        Correctif PRINCIPAL: on exige un 'id' et on met à jour par ID.
+        (Ancien code faisait services_repo.update(s.model_dump()) sans garantir l'id → crash)
+        """
+        payload = s.model_dump() if hasattr(s, "model_dump") else dict(s)  # type: ignore
+        if not payload.get("id"):
+            raise ValueError("update_service requires Service with 'id'")
+        return self.services_repo.update(payload)
 
-    # -------- Services --------
-    def list_services(self) -> List[Service]:
-        items = self.services_repo.list_all()
-        out: List[Service] = []
-        for d in items:
-            try:
-                out.append(Service(**d))
-            except ValidationError:
-                continue
-        return out
+    def delete_service(self, service_id: str) -> bool:
+        return self.services_repo.delete(service_id)
 
-    def add_service(self, s: Service) -> Service:
-        self.services_repo.add(s.model_dump())
-        return s
+    # -------- Produits -------- #
 
-    def update_service(self, s) -> None:
-        if not getattr(s, "id", None):
-            self.services_repo.add(s.model_dump())
-            return
-        self.services_repo.upsert(s.model_dump())
-    
-        def delete_service(self, service_id: str) -> None:
-            self.services_repo.delete(service_id)
+    def list_products(self) -> List[Dict[str, Any]]:
+        return self.products_repo.list_all()
 
-    def get_service(self, service_id: str) -> Optional[Service]:
-        matches = self.services_repo.find(lambda d: d.get("id") == service_id)
-        if not matches:
-            return None
-        try:
-            return Service(**matches[0])
-        except ValidationError:
-            return None
+    def add_product(self, p: Product) -> Dict[str, Any]:
+        payload = p.model_dump() if hasattr(p, "model_dump") else dict(p)  # type: ignore
+        if payload.get("price_cents") is None:
+            payload["price_cents"] = 0
+        return self.products_repo.add(payload)
+
+    def update_product(self, p: Product) -> Dict[str, Any]:
+        payload = p.model_dump() if hasattr(p, "model_dump") else dict(p)  # type: ignore
+        if not payload.get("id"):
+            raise ValueError("update_product requires Product with 'id'")
+        return self.products_repo.update(payload)
+
+    def delete_product(self, product_id: str) -> bool:
+        return self.products_repo.delete(product_id)
