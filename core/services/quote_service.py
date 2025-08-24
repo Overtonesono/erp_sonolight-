@@ -3,6 +3,9 @@ import os, json, re
 from typing import List, Optional
 from math import isfinite
 from pydantic import ValidationError
+from pathlib import Path
+from typing import Optional
+import pdfkit
 
 from core.models.quote import Quote, QuoteLine
 from core.models.client import Client
@@ -115,24 +118,117 @@ class QuoteService:
         _dump_json(SETTINGS_JSON, settings)
         return number
 
-    # ---------- PDF ONLY ----------
-    def export_quote_pdf(self, q: Quote, out_dir: Optional[str] = None) -> str:
-        from jinja2 import Environment, FileSystemLoader, select_autoescape
-        templates_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates", "pdf"))
-        env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape())
-        tpl = env.get_template("quote.html")
+def _clean_path(p: str) -> str:
+    """Nettoie un chemin potentiellement mal échappé type 'C\\:\\Program Files\\...'
+    et retourne un chemin Windows valide style 'C:\\Program Files\\...'
+    """
+    if not p:
+        return ""
+    # Retire quotes parasites
+    p = p.strip().strip('"').strip("'")
+    # Corrige le pattern 'C\\:\' -> 'C:\'
+    p = p.replace("\\:", ":")
+    # Normalise
+    return os.path.normpath(p)
 
-        clients = self.load_client_map(); client = clients.get(q.client_id)
-        client_name = _slug(getattr(client, "name", "") or "Client")
-        settings = _load_json(SETTINGS_JSON) or {}
-        company = settings.get("company", {})
-        legal = settings.get("legal", {})
-        terms = legal.get("quote_terms") or DEF_TERMS
 
-        def cent_to_eur(c: int) -> str:
-            return f"{c/100:.2f} €"
+def _find_wkhtmltopdf(settings_path: Optional[str] = None) -> Optional[str]:
+    """Tente de localiser wkhtmltopdf.exe.
+    Priorités : var d'env -> settings.json -> chemins connus.
+    Retourne un chemin utilisable ou None.
+    """
+    # 1) Variables d'environnement possibles
+    for env_key in ("WKHTMLTOPDF", "WKHTMLTOPDF_CMD"):
+        val = os.environ.get(env_key)
+        if val:
+            path = _clean_path(val)
+            if Path(path).is_file():
+                return path
 
-        html = tpl.render(
+    # 2) settings.json si tu stockes un chemin (optionnel)
+    #    Exemple: {"wkhtmltopdf_path": "C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe"}
+    try:
+        from core.storage.settings_repo import SettingsRepo  # si tu as un repo de settings
+        repo = SettingsRepo()
+        s = repo.load()
+        wk = s.get("wkhtmltopdf_path")
+        if wk:
+            path = _clean_path(wk)
+            if Path(path).is_file():
+                return path
+    except Exception:
+        # Repo de settings absent ou non utilisé -> ignore
+        pass
+
+    # 3) Chemins Windows habituels
+    candidates = [
+        r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
+        r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe",
+    ]
+    for c in candidates:
+        if Path(c).is_file():
+            return c
+
+    # 4) PATH système
+    from shutil import which
+    found = which("wkhtmltopdf")
+    if found:
+        return _clean_path(found)
+
+    return None
+
+
+def _render_pdf_with_weasyprint(html: str, out_path: Path, base_url: Optional[str]) -> None:
+    """Fallback WeasyPrint (ne nécessite pas wkhtmltopdf)."""
+    try:
+        from weasyprint import HTML
+    except Exception as e:
+        raise RuntimeError(
+            "Aucun wkhtmltopdf trouvé et WeasyPrint n'est pas installé. "
+            "Installe WeasyPrint (pip install weasyprint) ou fournis un chemin wkhtmltopdf.\n"
+            f"Détails: {e}"
+        ) from e
+
+    HTML(string=html, base_url=base_url).write_pdf(str(out_path))
+
+
+def export_quote_pdf(self, quote) -> Path:
+    """Génère le PDF du devis sans créer d'HTML temporaire.
+    Utilise wkhtmltopdf si dispo, sinon WeasyPrint.
+    """
+    # 1) Génère le HTML en mémoire
+    html = self._render_quote_html(quote)  # suppose que tu as déjà cette méthode
+    exports_dir = Path("exports")
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    out_path = exports_dir / f"devis_{quote.number}.pdf"
+
+    # Pour les ressources (CSS, images) résolues depuis templates/pdf/
+    base_url = str(Path("templates").resolve())
+
+    # 2) Tente wkhtmltopdf d'abord
+    wkhtml = _find_wkhtmltopdf()
+    if wkhtml:
+        try:
+            config = pdfkit.configuration(wkhtmltopdf=wkhtml)
+            # options utiles : gère la résolution CSS/IMG relative grâce à 'enable-local-file-access'
+            options = {
+                "enable-local-file-access": None,
+                "quiet": "",
+                "encoding": "UTF-8",
+                # Ajoute d'autres options si besoin : marges, dpi, etc.
+            }
+            pdfkit.from_string(html, str(out_path), options=options, configuration=config)
+            return out_path
+        except Exception as e:
+            # Log et fallback WeasyPrint
+            import logging
+            logging.getLogger(__name__).warning(
+                "Échec wkhtmltopdf (%s). Fallback WeasyPrint...", e
+            )
+
+    # 3) Fallback WeasyPrint
+    _render_pdf_with_weasyprint(html, out_path, base_url=base_url)
+    return out_path
             quote={
                 "number": q.number,
                 "event_date": q.event_date.isoformat() if q.event_date else None,
