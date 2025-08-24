@@ -67,6 +67,7 @@ class CatalogService:
     - Repos auto (data/services.json, data/products.json) si non fournis
     - Hydrate JSON -> objets Product/Service
     - Normalise: label <- name si absent ; unit "" ; price_cents int >= 0
+    - Updates en upsert: si l'ID n'existe pas, l'entrée est créée.
     """
 
     def __init__(
@@ -147,7 +148,8 @@ class CatalogService:
         if not payload.get("id"):
             raise ValueError("update_service requires Service with 'id'")
         payload = self._ensure_defaults(payload)
-        return self.services_repo.update(payload)
+        # <-- upsert au lieu de update strict
+        return self.services_repo.upsert(payload)
 
     def delete_service(self, service_id: str) -> bool:
         return self.services_repo.delete(service_id)
@@ -172,7 +174,8 @@ class CatalogService:
         if not payload.get("id"):
             raise ValueError("update_product requires Product with 'id'")
         payload = self._ensure_defaults(payload)
-        return self.products_repo.update(payload)
+        # <-- upsert au lieu de update strict
+        return self.products_repo.upsert(payload)
 
     def delete_product(self, product_id: str) -> bool:
         return self.products_repo.delete(product_id)
