@@ -29,6 +29,28 @@ def _escape_html(s: Any) -> str:
     from html import escape
     return escape("" if s is None else str(s))
 
+def _find_wkhtmltopdf_exe() -> Optional[str]:
+    import os, shutil
+    # 1) Variable d'env prioritaire
+    env_path = os.environ.get("WKHTMLTOPDF_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    # 2) Dans le PATH
+    p = shutil.which("wkhtmltopdf")
+    if p:
+        return p
+    # 3) Emplacements Windows fréquents
+    candidates = [
+        r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
+        r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe",
+        r"C:\Program Files\wkhtmltopdf\wkhtmltopdf.exe",
+        r"C:\Program Files (x86)\wkhtmltopdf\wkhtmltopdf.exe",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
 # ---------------- Utils ---------------- #
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -322,14 +344,13 @@ class QuoteService:
 
     def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
         """
-        Génère un PDF de devis dans exports/devis/<NUMERO>.pdf
-        - Tente WeasyPrint.
-        - Si échec (ImportError, OSError, etc.), fallback vers wkhtmltopdf via pdfkit.
-        - Si aucun backend dispo: lève RuntimeError (pas d’HTML écrit).
+        Génère un PDF de devis dans exports/devis/<NUMERO>.pdf (PDF SEULEMENT).
+        Utilise wkhtmltopdf via pdfkit. Pas de HTML persistant.
+        Lève une erreur claire si wkhtmltopdf introuvable.
         """
         from datetime import datetime as _dt
         from pathlib import Path
-        import os, tempfile
+        import pdfkit, os
 
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
@@ -423,41 +444,28 @@ class QuoteService:
 </body>
 </html>"""
 
+        # Dossier sortie: exports/devis/<NUMERO>.pdf
         project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / "exports" / "devis"   # <-- dossier demandé
+        out_dir = project_root / "exports" / "devis"
         out_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = out_dir / f"{number}.pdf"
 
-        # 1) WeasyPrint (catch large: ImportError, OSError, etc.)
-        try:
-            from weasyprint import HTML  # type: ignore
-            HTML(string=html, base_url=str(project_root)).write_pdf(str(pdf_path))
-            return str(pdf_path)
-        except Exception:
-            pass  # on tente pdfkit
+        # Configuration wkhtmltopdf (autodétection)
+        wkhtml = _find_wkhtmltopdf_exe()
+        if not wkhtml:
+            raise RuntimeError(
+                "wkhtmltopdf introuvable. Installez-le puis redémarrez l'application.\n"
+                "Vous pouvez aussi définir la variable d'environnement WKHTMLTOPDF_PATH "
+                "vers l'exécutable wkhtmltopdf.exe."
+            )
+        config = pdfkit.configuration(wkhtmltopdf=wkhtml)
 
-        # 2) wkhtmltopdf via pdfkit (fichier HTML temporaire, supprimé après)
-        try:
-            import pdfkit
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as tmp:
-                tmp.write(html)
-                tmp_path = tmp.name
-            try:
-                pdfkit.from_file(tmp_path, str(pdf_path))
-                return str(pdf_path)
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 3) Aucun backend dispo
-        raise RuntimeError(
-            "Impossible de générer le PDF : WeasyPrint indisponible et wkhtmltopdf/pdfkit non trouvés.\n"
-            "Solutions Windows :\n"
-            "  • Option A (recommandée) : installer wkhtmltopdf puis `pip install pdfkit`.\n"
-            "  • Option B : installer toutes les dépendances WeasyPrint (GTK/Pango)."
-        )
+        # Génération PDF (depuis la string HTML, sans fichier temporaire persistant)
+        options = {
+            "quiet": "",
+            "encoding": "UTF-8",
+            "enable-local-file-access": None,  # par sécurité si images locales plus tard
+        }
+        pdfkit.from_string(html, str(pdf_path), configuration=config, options=options)
+        return str(pdf_path)
 
