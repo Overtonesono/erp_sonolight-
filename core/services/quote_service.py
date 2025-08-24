@@ -161,7 +161,7 @@ class QuoteService:
         settings = _load_json(SETTINGS_JSON) or {}
         company = settings.get("company", {}) if isinstance(settings, dict) else {}
 
-        terms = q.terms or settings.get("default_terms") or DEF_TERMS
+        terms = getattr(q, "terms", None) or settings.get("default_terms") or DEF_TERMS
 
         ctx = {
             "quote": {
