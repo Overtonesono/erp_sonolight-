@@ -322,32 +322,27 @@ class QuoteService:
 
     def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
         """
-        Génère un PDF de devis dans exports/quotes/.
-        - Utilise WeasyPrint si dispo; sinon exporte un HTML prêt à imprimer.
-        - Retourne le chemin du fichier généré.
+        Génère un PDF de devis dans exports/devis/<NUMERO>.pdf
+        - Tente WeasyPrint en priorité.
+        - Fallback sur wkhtmltopdf via pdfkit si dispo.
+        - Sinon lève une erreur claire (aucun HTML n’est écrit).
         """
-        import os
         from datetime import datetime as _dt
+        from pathlib import Path
+        import tempfile, os
 
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
         created_str = getattr(q, "created_at", None)
-        if hasattr(created_str, "strftime"):
-            created_fmt = created_str.strftime("%Y-%m-%d")
-        else:
-            created_fmt = _dt.now().strftime("%Y-%m-%d")
+        created_fmt = created_str.strftime("%Y-%m-%d") if hasattr(created_str, "strftime") else _dt.now().strftime("%Y-%m-%d")
 
-        # Client (si map côté UI, ici on met au minimum l'id)
         client_id = getattr(q, "client_id", None)
         client_name = f"Client {client_id or ''}".strip()
 
         # Lignes
-        lines = getattr(q, "items", None)
-        if lines is None:
-            lines = getattr(q, "lines", [])  # Quote hydraté assure QuoteLine
+        lines = getattr(q, "items", None) or getattr(q, "lines", [])
         rows_html = []
         for ln in lines:
-            # Accès attributs sûrs
             ref = getattr(ln, "ref", "") or ""
             label = getattr(ln, "label", "") or ""
             desc = getattr(ln, "description", "") or ""
@@ -355,7 +350,6 @@ class QuoteService:
             qty = getattr(ln, "qty", 1) or 1
             pc = int(getattr(ln, "price_cents", 0) or 0)
             total = int(getattr(ln, "total_ttc_cent", int(round(pc * float(qty)))) or 0)
-
             rows_html.append(
                 f"<tr>"
                 f"<td>{_escape_html(ref)}</td>"
@@ -371,7 +365,6 @@ class QuoteService:
         total_ttc = int(getattr(q, "total_ttc_cent", 0) or 0)
         total_ht = int(getattr(q, "total_ht_cent", total_ttc) or 0)
 
-        # HTML minimaliste (compatible impression)
         html = f"""<!doctype html>
 <html lang="fr">
 <head>
@@ -384,7 +377,6 @@ class QuoteService:
   table {{ width:100%; border-collapse: collapse; }}
   th, td {{ border:1px solid #ddd; padding:8px; vertical-align: top; }}
   th {{ background:#f5f5f5; text-align:left; }}
-  tfoot td {{ border:none; }}
   .totals td {{ padding:6px 8px; }}
   .right {{ text-align:right; }}
   .muted {{ color:#666; font-size:12px; }}
@@ -433,19 +425,39 @@ class QuoteService:
 </body>
 </html>"""
 
-        # Dossier sortie
-        base = Path(__file__).resolve().parents[2]
-        out_dir = base / "exports" / "quotes"
+        # Chemin de sortie : exports/devis/<NUMERO>.pdf
+        project_root = Path(__file__).resolve().parents[2]
+        out_dir = project_root / "exports" / "devis"
         out_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = out_dir / f"{number}.pdf"
 
-        # Si WeasyPrint dispo -> PDF ; sinon HTML
+        # 1) WeasyPrint
         try:
             from weasyprint import HTML  # type: ignore
-            out_path = out_dir / f"{number}.pdf"
-            HTML(string=html, base_url=str(base)).write_pdf(str(out_path))
-            return str(out_path)
+            HTML(string=html, base_url=str(project_root)).write_pdf(str(pdf_path))
+            return str(pdf_path)
+        except ImportError:
+            pass
+
+        # 2) wkhtmltopdf via pdfkit (pas d'écriture HTML persistante)
+        try:
+            import pdfkit, tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as tmp:
+                tmp.write(html)
+                tmp_path = tmp.name
+            try:
+                pdfkit.from_file(tmp_path, str(pdf_path))
+                return str(pdf_path)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
         except Exception:
-            # Fallback HTML
-            out_path = out_dir / f"{number}.html"
-            out_path.write_text(html, encoding="utf-8")
-            return str(out_path)
+            pass
+
+        # 3) Rien de dispo → erreur claire
+        raise RuntimeError(
+            "Aucun moteur PDF disponible. Installez soit WeasyPrint (pip install weasyprint), "
+            "soit wkhtmltopdf + pdfkit (wkhtmltopdf installé puis pip install pdfkit)."
+        )
