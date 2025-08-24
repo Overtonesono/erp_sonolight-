@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date
+from types import SimpleNamespace
 
 try:
     from pydantic import BaseModel
@@ -16,7 +17,7 @@ except Exception:  # pragma: no cover
 from core.storage.json_repo import JsonRepository
 from core.services.catalog_service import CatalogService
 # Modèles du projet
-from core.models.quote import Quote, QuoteLine, Payment  # IMPORTANT
+from core.models.quote import Quote, QuoteLine  # <-- plus d'import Payment ici
 
 
 # ---------------- Utils ---------------- #
@@ -71,7 +72,6 @@ def _parse_date(s: Any) -> Optional[date]:
     if isinstance(s, date) and not isinstance(s, datetime):
         return s
     try:
-        # accepte 'YYYY-MM-DD' ou 'YYYY-MM-DDTHH:MM:SS'
         return datetime.fromisoformat(str(s)).date()
     except Exception:
         return None
@@ -163,11 +163,17 @@ class QuoteService:
         e["total_ttc_cent"] = int(round(pc * qty))  # TTC = HT
         return QuoteLine.model_validate(e) if _HAS_PYDANTIC and hasattr(QuoteLine, "model_validate") else QuoteLine(**e)  # type: ignore
 
-    def _hydrate_payment(self, d: Dict[str, Any]) -> Payment:
-        pd = dict(d)
-        pd["at"] = _parse_dt(pd.get("at")) or _parse_dt(pd.get("date"))  # compat éventuelle
-        pd["amount_cent"] = int(pd.get("amount_cent") or 0)
-        return Payment.model_validate(pd) if _HAS_PYDANTIC and hasattr(Payment, "model_validate") else Payment(**pd)  # type: ignore
+    def _hydrate_payment_obj(self, d: Dict[str, Any]) -> SimpleNamespace:
+        """Retourne un petit objet avec .at/.amount_cent/.method/.invoice_id/.kind"""
+        at_dt = _parse_dt(d.get("at")) or _parse_dt(d.get("date"))
+        amount = int(d.get("amount_cent") or 0)
+        return SimpleNamespace(
+            at=at_dt,
+            amount_cent=amount,
+            method=d.get("method"),
+            invoice_id=d.get("invoice_id"),
+            kind=d.get("kind") or d.get("type") or "PAYMENT",
+        )
 
     def _normalize_lines_key(self, qd: Dict[str, Any]) -> List[Dict[str, Any]]:
         lines = qd.get("items", None)
@@ -190,9 +196,9 @@ class QuoteService:
         line_objs = [self._hydrate_line(ld) for ld in raw_lines]
         total = sum(int(getattr(ln, "total_ttc_cent", 0) or 0) for ln in line_objs)
 
-        # paiements
+        # paiements (objets pour l'UI)
         raw_payments = qd.get("payments", [])
-        pay_objs = [self._hydrate_payment(_to_dict(p)) for p in raw_payments if p is not None]
+        pay_objs = [self._hydrate_payment_obj(_to_dict(p)) for p in raw_payments if p is not None]
 
         # écrire dans la bonne clé (items vs lines) selon le modèle
         if _HAS_PYDANTIC and hasattr(Quote, "model_fields") and "items" in Quote.model_fields:  # type: ignore
@@ -200,11 +206,22 @@ class QuoteService:
         else:
             qd["lines"] = [ln.model_dump() if hasattr(ln, "model_dump") else _to_dict(ln) for ln in line_objs]
 
-        qd["payments"] = [p.model_dump() if hasattr(p, "model_dump") else _to_dict(p) for p in pay_objs]
+        qd["payments"] = [vars(p) for p in pay_objs]  # dicts pour hydratation Pydantic
+
         qd["total_ht_cent"] = total
         qd["total_ttc_cent"] = total
 
-        return Quote.model_validate(qd) if _HAS_PYDANTIC and hasattr(Quote, "model_validate") else Quote(**qd)  # type: ignore
+        q = Quote.model_validate(qd) if _HAS_PYDANTIC and hasattr(Quote, "model_validate") else Quote(**qd)  # type: ignore
+
+        # Après hydratation, on remplace la liste par les objets pour l’UI (attributs .at etc.)
+        try:
+            # q.payments peut être list[...] (pydantic) → on force des objets simples
+            object_payments = [self._hydrate_payment_obj(_to_dict(p)) for p in (q.payments or [])]
+            setattr(q, "payments", object_payments)  # type: ignore
+        except Exception:
+            pass
+
+        return q
 
     # ---------- Numérotation ---------- #
 
@@ -212,7 +229,6 @@ class QuoteService:
         """Génère DV-YYYY-#### en incrémentant dans l'année courante."""
         year = datetime.now().year
         prefix = f"DV-{year}-"
-        # parcourt les numéros existants
         max_n = 0
         for d in self.repo.list_all():
             num = d.get("number") or ""
@@ -267,7 +283,6 @@ class QuoteService:
     def add_quote(self, q: Quote | Dict[str, Any]) -> Dict[str, Any]:
         q2 = self.recalc_totals(q)
         payload = _to_dict(q2)
-        # numéro auto si manquant
         if not payload.get("number"):
             payload["number"] = self._next_quote_number()
         return self.repo.add(payload)
