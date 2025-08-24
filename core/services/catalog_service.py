@@ -143,19 +143,21 @@ class CatalogService:
         return payload
 
     def _sync_prices(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Force cohérence entre price_eur (UI) et price_cents (stockage)."""
-    if "price_eur" in payload and payload["price_eur"] not in (None, ""):
-        try:
-            val = float(str(payload["price_eur"]).replace(",", "."))
-            payload["price_cents"] = int(round(val * 100))
-        except Exception:
-            payload["price_cents"] = int(payload.get("price_cents") or 0)
-    else:
-        try:
-            payload["price_eur"] = (int(payload.get("price_cents") or 0) / 100.0)
-        except Exception:
-            payload["price_eur"] = 0.0
-    return payload
+        """
+        Force cohérence entre price_eur (UI) et price_cents (stockage).
+        """
+        if "price_eur" in payload and payload["price_eur"] not in (None, ""):
+            try:
+                val = float(str(payload["price_eur"]).replace(",", "."))
+                payload["price_cents"] = int(round(val * 100))
+            except Exception:
+                payload["price_cents"] = int(payload.get("price_cents") or 0)
+        else:
+            try:
+                payload["price_eur"] = (int(payload.get("price_cents") or 0) / 100.0)
+            except Exception:
+                payload["price_eur"] = 0.0
+        return payload
 
     def _hydrate(self, d: Dict[str, Any], model: Type[T]) -> T:
         """Hydrate un dict JSON en objet modèle, en reconstruisant price_cents si besoin."""
