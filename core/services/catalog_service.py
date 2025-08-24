@@ -142,6 +142,21 @@ class CatalogService:
         payload["price_cents"] = self._parse_price_cents(payload)
         return payload
 
+    def _sync_prices(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Force cohérence entre price_eur (UI) et price_cents (stockage)."""
+    if "price_eur" in payload and payload["price_eur"] not in (None, ""):
+        try:
+            val = float(str(payload["price_eur"]).replace(",", "."))
+            payload["price_cents"] = int(round(val * 100))
+        except Exception:
+            payload["price_cents"] = int(payload.get("price_cents") or 0)
+    else:
+        try:
+            payload["price_eur"] = (int(payload.get("price_cents") or 0) / 100.0)
+        except Exception:
+            payload["price_eur"] = 0.0
+    return payload
+
     def _hydrate(self, d: Dict[str, Any], model: Type[T]) -> T:
         """Hydrate un dict JSON en objet modèle, en reconstruisant price_cents si besoin."""
         if d is None:
@@ -203,10 +218,12 @@ class CatalogService:
 
     def add_service(self, s: Any) -> Dict[str, Any]:
         payload = self._ensure_defaults(self._to_dict(s))
+        payload = self._sync_prices(payload)
         return self.services_repo.add(payload)
 
     def update_service(self, s: Any) -> Dict[str, Any]:
         payload = self._ensure_defaults(self._to_dict(s))
+        payload = self._sync_prices(payload)
         if not (payload.get("id") or payload.get("ref") or payload.get("name")):
             raise ValueError("update_service requires at least one key (id/ref/name)")
         return self._smart_upsert(self.services_repo, payload)
@@ -224,10 +241,12 @@ class CatalogService:
         
     def add_product(self, p: Any) -> Dict[str, Any]:
         payload = self._ensure_defaults(self._to_dict(p))
+        payload = self._sync_prices(payload)
         return self.products_repo.add(payload)
 
     def update_product(self, p: Any) -> Dict[str, Any]:
         payload = self._ensure_defaults(self._to_dict(p))
+        payload = self._sync_prices(payload)
         if not (payload.get("id") or payload.get("ref") or payload.get("name")):
             raise ValueError("update_product requires at least one key (id/ref/name)")
         return self._smart_upsert(self.products_repo, payload)
