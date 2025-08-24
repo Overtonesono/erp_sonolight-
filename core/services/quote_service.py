@@ -215,46 +215,14 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
     desc  = line.get("description") or (src.get("description") if src else None) or (label or "")
 
     # ---- Prix ----
-    # a) priorité à un prix déjà présent sur la ligne
-    price_cents = line.get("price_cents")
-    if price_cents in (None, "", 0):
-        price_cents = _price_to_cents(line)  # convertit price_eur/price/* -> centimes
-
-    # b) sinon, récupérer depuis la fiche catalogue (centimes OU euros)
+    price_cents = _price_to_cents(line)
     if (price_cents in (None, "", 0)) and src:
-        # essaie les champs centimes connus…
-        for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
-            if src.get(k) not in (None, "", 0):
-                try:
-                    price_cents = int(src[k])
-                    break
-                except Exception:
-                    pass
-        # …puis conversion depuis euros ou autres variantes si encore 0
-        if price_cents in (None, "", 0):
-            price_cents = _price_to_cents(src)
-
+        price_cents = _price_to_cents(src)
     try:
         price_cents = int(price_cents or 0)
     except Exception:
         price_cents = 0
-
-    out = dict(line)
-    out.setdefault("ref", src.get("ref") if (src and not out.get("ref")) else out.get("ref"))
-    out["label"] = label or ""
-    out["unit"] = unit or ""
-    out["description"] = desc or ""
-    out["price_cents"] = price_cents
-
-    if not out.get("item_type"):
-        if out.get("product_id"):
-            out["item_type"] = "product"
-        elif out.get("service_id"):
-            out["item_type"] = "service"
-        else:
-            out["item_type"] = "item"
-    return out
-
+            
     # ---------- Hydratation Pydantic ---------- #
 
     def _hydrate_line(self, d: Dict[str, Any]) -> QuoteLine:
