@@ -93,6 +93,16 @@ class CatalogService:
 
     # ---------- Helpers ---------- #
 
+    def _to_dict(self, obj: Any) -> Dict[str, Any]:
+        if isinstance(obj, dict):
+            return dict(obj)
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()  # pydantic v2
+        try:
+            return dict(obj.__dict__)  # fallback objet simple
+        except Exception:
+            return {}
+    
     def _parse_price_cents(self, payload: Dict[str, Any]) -> int:
         """Convertit price_eur → price_cents si présent, sinon essaie tous les anciens champs."""
         # 1) priorité au champ euros (édition UI)
@@ -191,11 +201,14 @@ class CatalogService:
     def get_service(self, service_id: str) -> Service:
         return self._hydrate(self.services_repo.get_by_id(service_id), Service)
 
-    def add_service(self, s: Service) -> Dict[str, Any]:
-        return self.services_repo.add(self._ensure_defaults(s.model_dump()))
+    def add_service(self, s: Any) -> Dict[str, Any]:
+        payload = self._ensure_defaults(self._to_dict(s))
+        return self.services_repo.add(payload)
 
-    def update_service(self, s: Service) -> Dict[str, Any]:
-        payload = self._ensure_defaults(s.model_dump())
+    def update_service(self, s: Any) -> Dict[str, Any]:
+        payload = self._ensure_defaults(self._to_dict(s))
+        if not (payload.get("id") or payload.get("ref") or payload.get("name")):
+            raise ValueError("update_service requires at least one key (id/ref/name)")
         return self._smart_upsert(self.services_repo, payload)
 
     def delete_service(self, service_id: str) -> bool:
@@ -208,12 +221,15 @@ class CatalogService:
 
     def get_product(self, product_id: str) -> Product:
         return self._hydrate(self.products_repo.get_by_id(product_id), Product)
+        
+    def add_product(self, p: Any) -> Dict[str, Any]:
+        payload = self._ensure_defaults(self._to_dict(p))
+        return self.products_repo.add(payload)
 
-    def add_product(self, p: Product) -> Dict[str, Any]:
-        return self.products_repo.add(self._ensure_defaults(p.model_dump()))
-
-    def update_product(self, p: Product) -> Dict[str, Any]:
-        payload = self._ensure_defaults(p.model_dump())
+    def update_product(self, p: Any) -> Dict[str, Any]:
+        payload = self._ensure_defaults(self._to_dict(p))
+        if not (payload.get("id") or payload.get("ref") or payload.get("name")):
+            raise ValueError("update_product requires at least one key (id/ref/name)")
         return self._smart_upsert(self.products_repo, payload)
 
     def delete_product(self, product_id: str) -> bool:
