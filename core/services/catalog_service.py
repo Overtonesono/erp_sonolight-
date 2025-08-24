@@ -34,9 +34,11 @@ class CatalogService:
         self.products_repo.add(p.model_dump())
         return p
 
-    def update_product(self, p: Product) -> Product:
+    def update_product(self, s) -> None:
+        if not getattr(s, "id", None)
+            self.products_repo.update(p.model_dump())
+            return p
         self.products_repo.update(p.model_dump())
-        return p
 
     def delete_product(self, product_id: str) -> None:
         self.products_repo.delete(product_id)
@@ -65,12 +67,14 @@ class CatalogService:
         self.services_repo.add(s.model_dump())
         return s
 
-    def update_service(self, s: Service) -> Service:
-        self.services_repo.update(s.model_dump())
-        return s
-
-    def delete_service(self, service_id: str) -> None:
-        self.services_repo.delete(service_id)
+    def update_service(self, s) -> None:
+        if not getattr(s, "id", None):
+            self.services_repo.add(s.model_dump())
+            return
+        self.services_repo.upsert(s.model_dump())
+    
+        def delete_service(self, service_id: str) -> None:
+            self.services_repo.delete(service_id)
 
     def get_service(self, service_id: str) -> Optional[Service]:
         matches = self.services_repo.find(lambda d: d.get("id") == service_id)
