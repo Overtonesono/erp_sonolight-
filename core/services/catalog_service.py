@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -10,8 +11,11 @@ except Exception:  # pragma: no cover
         def model_dump(self):
             return dict(self.__dict__)
 
+# Repo JSON générique
+from core.storage.json_repo import JsonRepository
 
-class Service(BaseModel):  # modèle simple minimal (remplace par ton vrai modèle si déjà défini)
+
+class Service(BaseModel):
     id: Optional[str] = None
     name: str
     description: Optional[str] = None
@@ -19,7 +23,7 @@ class Service(BaseModel):  # modèle simple minimal (remplace par ton vrai modè
     active: bool = True
 
 
-class Product(BaseModel):  # idem
+class Product(BaseModel):
     id: Optional[str] = None
     name: str
     description: Optional[str] = None
@@ -29,13 +33,26 @@ class Product(BaseModel):  # idem
 
 class CatalogService:
     """
-    Orchestration pour Produits & Services, au-dessus de JsonRepository.
-    Attendu: repo expose add()/update()/delete()/list_all()
+    Orchestrateur Produits & Services.
+    Si aucun repo n'est fourni, crée automatiquement:
+      data/services.json et data/products.json
     """
 
-    def __init__(self, services_repo, products_repo) -> None:
-        self.services_repo = services_repo
-        self.products_repo = products_repo
+    def __init__(
+        self,
+        services_repo: Optional[JsonRepository] = None,
+        products_repo: Optional[JsonRepository] = None,
+        data_dir: Optional[str | Path] = None,
+    ) -> None:
+        base = Path(data_dir) if data_dir else Path(__file__).resolve().parents[2] / "data"
+        base.mkdir(parents=True, exist_ok=True)
+
+        self.services_repo = services_repo or JsonRepository(
+            base / "services.json", entity_name="service", key="id"
+        )
+        self.products_repo = products_repo or JsonRepository(
+            base / "products.json", entity_name="product", key="id"
+        )
 
     # -------- Services -------- #
 
@@ -43,17 +60,12 @@ class CatalogService:
         return self.services_repo.list_all()
 
     def add_service(self, s: Service) -> Dict[str, Any]:
-        # accepte BaseModel ou dict
         payload = s.model_dump() if hasattr(s, "model_dump") else dict(s)  # type: ignore
         if payload.get("price_cents") is None:
             payload["price_cents"] = 0
         return self.services_repo.add(payload)
 
     def update_service(self, s: Service) -> Dict[str, Any]:
-        """
-        Correctif PRINCIPAL: on exige un 'id' et on met à jour par ID.
-        (Ancien code faisait services_repo.update(s.model_dump()) sans garantir l'id → crash)
-        """
         payload = s.model_dump() if hasattr(s, "model_dump") else dict(s)  # type: ignore
         if not payload.get("id"):
             raise ValueError("update_service requires Service with 'id'")
