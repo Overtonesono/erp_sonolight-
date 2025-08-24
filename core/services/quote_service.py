@@ -147,6 +147,11 @@ class QuoteService:
             return None
 
     def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Complète la ligne dict: description, label, unit, price_cents si manquants
+        depuis le catalogue (product_id/service_id ou ref), sinon fallback label.
+        Gère correctement les prix en euros (price_eur) -> centimes.
+        """
         src: Optional[Dict[str, Any]] = (
             self._get_product_dict(line.get("product_id")) or
             self._get_service_dict(line.get("service_id"))
@@ -158,11 +163,26 @@ class QuoteService:
         unit = line.get("unit") if line.get("unit") is not None else (src.get("unit") if src else "")
         desc = line.get("description") or (src.get("description") if src else None) or (label or "")
 
+        # ---- Prix ----
+        # 1) si la ligne contient déjà un prix (centimes ou euros), on le prend
         price_cents = line.get("price_cents")
         if price_cents in (None, "", 0):
-            price_cents = _price_to_cents(line)
-        if price_cents in (None, "", 0) and src:
-            price_cents = src.get("price_cents") or 0
+            price_cents = _price_to_cents(line)  # convertit price_eur/price -> centimes
+
+        # 2) sinon, on récupère depuis la fiche catalogue (quel que soit le champ: cents ou euros)
+        if (price_cents in (None, "", 0)) and src:
+            # essaie champs "centimes" connus
+            for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
+                if src.get(k) not in (None, "", 0):
+                    try:
+                        price_cents = int(src[k])
+                        break
+                    except Exception:
+                        pass
+            # si toujours 0 -> convertit automatiquement depuis price_eur/price
+            if price_cents in (None, "", 0):
+                price_cents = _price_to_cents(src)
+
         try:
             price_cents = int(price_cents or 0)
         except Exception:
@@ -188,12 +208,17 @@ class QuoteService:
 
     def _hydrate_line(self, d: Dict[str, Any]) -> QuoteLine:
         e = self._enrich_line_dict(d)
+        # si malgré tout c'est 0 et qu'on a un price_eur dans la source brute, re-convertir
+        if int(e.get("price_cents") or 0) == 0:
+            pc = _price_to_cents(d)
+            if pc:
+                e["price_cents"] = pc
         qty = _qty_to_float(e.get("qty", e.get("quantity", 1)))
         pc = int(e.get("price_cents") or 0)
         e["qty"] = qty
         e["total_ttc_cent"] = int(round(pc * qty))  # TTC = HT
         return QuoteLine.model_validate(e) if _HAS_PYDANTIC and hasattr(QuoteLine, "model_validate") else QuoteLine(**e)  # type: ignore
-
+        
     def _hydrate_payment_obj(self, d: Dict[str, Any]) -> SimpleNamespace:
         """Retourne un petit objet avec .at/.amount_cent/.method/.invoice_id/.kind"""
         at_dt = _parse_dt(d.get("at")) or _parse_dt(d.get("date"))
