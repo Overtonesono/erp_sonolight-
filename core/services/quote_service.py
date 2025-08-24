@@ -33,12 +33,28 @@ def _get(obj: Any, key: str, default=None):
         return obj.get(key, default)
     return getattr(obj, key, default)
 
-def _set(obj: Any, key: str, value: Any) -> None:
+def _has_key_or_attr(obj: Any, name: str) -> bool:
+    if isinstance(obj, dict):
+        return name in obj
+    # Pydantic v2: model_fields / v1: __fields__
+    try:
+        mf = getattr(obj.__class__, "model_fields", None)
+        if isinstance(mf, dict) and name in mf:
+            return True
+    except Exception:
+        pass
+    return hasattr(obj, name)
+
+def _set_safe(obj: Any, key: str, value: Any) -> None:
+    """Pose la valeur seulement si le champ existe; sinon ignore."""
     if isinstance(obj, dict):
         obj[key] = value
-    else:
-        setattr(obj, key, value)
-
+        return
+    if _has_key_or_attr(obj, key):
+        try:
+            setattr(obj, key, value)
+        except Exception:
+            pass
 
 # ---------------- Service ---------------- #
 
@@ -190,13 +206,24 @@ class QuoteService:
             total += line_total
             new_items.append(d)
 
+        # Champs calculés dans le dict normalisé
         qd["items"] = new_items
         qd["total_ht_cent"] = total
         qd["total_ttc_cent"] = total
 
-        # Refléter dans l'objet d'origine (dict ou modèle)
-        for k, v in qd.items():
-            _set(quote, k, v)
+        # ----- Réinjection dans l'objet d'origine en respectant ses champs réels -----
+        # Nom du champ lignes attendu par le modèle: 'items' ou 'lines'
+        lines_field_out = "items" if _has_key_or_attr(quote, "items") else "lines"
+        _set_safe(quote, lines_field_out, new_items)
+
+        # Totaux (ne pose que si le champ existe dans le modèle)
+        _set_safe(quote, "total_ht_cent", total)
+        _set_safe(quote, "total_ttc_cent", total)
+
+        # Optionnel: recopie d'autres champs normalisés si le modèle les expose
+        for k in ("client_id", "status", "number", "event_date"):
+            if k in qd:
+                _set_safe(quote, k, qd[k])
 
         return quote
 
