@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import shutil
 import threading
@@ -9,7 +10,6 @@ from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Option
 from uuid import uuid4
 
 try:
-    # Pydantic v2
     from pydantic import BaseModel
     _HAS_PYDANTIC = True
 except Exception:  # pragma: no cover
@@ -23,7 +23,6 @@ T = TypeVar("T", bound=Union[BaseModel, Mapping[str, Any]])
 
 
 def _json_default(o: Any) -> Any:
-    """Sérialiseur JSON: date/datetime -> ISO 8601, sinon str(o)."""
     if isinstance(o, (date, datetime)):
         return o.isoformat()
     return str(o)
@@ -31,17 +30,26 @@ def _json_default(o: Any) -> Any:
 
 class JsonRepository(Generic[T]):
     """
-    Repo JSON générique (liste d'objets dict/BaseModel) avec clé primaire configurable.
-    - Stockage dans un fichier JSON (liste).
-    - Backup horodaté avant écriture.
-    - Sérialisation datetime -> ISO 8601.
+    Repo JSON générique avec clé primaire configurable.
+    - Rotation de backups (backup_enabled, backup_keep)
+    - N'écrit pas si le contenu ne change pas (réduction du bruit et des .bak)
     """
 
-    def __init__(self, filepath: Union[str, Path], entity_name: str = "entity", key: str = "id") -> None:
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        entity_name: str = "entity",
+        key: str = "id",
+        *,
+        backup_enabled: bool = True,
+        backup_keep: int = 5,
+    ) -> None:
         self.filepath = Path(filepath)
         self.entity_name = entity_name
         self.key = key
         self._lock = threading.Lock()
+        self.backup_enabled = backup_enabled
+        self.backup_keep = max(0, int(backup_keep))
 
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         if not self.filepath.exists():
@@ -53,9 +61,7 @@ class JsonRepository(Generic[T]):
         try:
             with self.filepath.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            if not isinstance(data, list):
-                return []
-            return data
+            return data if isinstance(data, list) else []
         except FileNotFoundError:
             return []
         except json.JSONDecodeError:
@@ -67,19 +73,45 @@ class JsonRepository(Generic[T]):
                 pass
             return []
 
+    def _rotate_backups(self) -> None:
+        if not self.backup_enabled or self.backup_keep <= 0:
+            return
+        pattern = str(self.filepath.with_suffix(".*.bak.json"))
+        files = sorted(glob.glob(pattern))
+        # garde les plus récents
+        if len(files) > self.backup_keep:
+            for old in files[: len(files) - self.backup_keep]:
+                try:
+                    Path(old).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     def _write_raw(self, data: Iterable[Mapping[str, Any]]) -> None:
         with self._lock:
-            # backup
+            new_dump = json.dumps(list(data), ensure_ascii=False, indent=2, default=_json_default)
+
+            # si contenu identique → ne rien faire
             if self.filepath.exists():
+                try:
+                    cur = self.filepath.read_text(encoding="utf-8")
+                    if cur == new_dump:
+                        return
+                except Exception:
+                    pass
+
+            # backup
+            if self.backup_enabled and self.filepath.exists():
                 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
                 backup = self.filepath.with_suffix(f".{ts}.bak.json")
                 try:
                     shutil.copy2(self.filepath, backup)
                 except Exception:
                     pass
+                self._rotate_backups()
+
             # write
             with self.filepath.open("w", encoding="utf-8") as f:
-                json.dump(list(data), f, ensure_ascii=False, indent=2, default=_json_default)
+                f.write(new_dump)
 
     # ---------------- Helpers ---------------- #
 
@@ -88,7 +120,7 @@ class JsonRepository(Generic[T]):
         if _HAS_PYDANTIC and isinstance(item, BaseModel):
             return item.model_dump()
         if hasattr(item, "model_dump"):
-            return item.model_dump()  # BaseModel-like
+            return item.model_dump()
         if isinstance(item, Mapping):
             return dict(item)
         return dict(item.__dict__)  # type: ignore[arg-type]
@@ -150,10 +182,6 @@ class JsonRepository(Generic[T]):
     # ---------------- Recherches (compat .find) ---------------- #
 
     def find(self, predicate: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
-        """
-        Retourne tous les enregistrements pour lesquels predicate(record) == True.
-        Compatible avec les usages: repo.find(lambda d: d.get("quote_id") == qid)
-        """
         rows = self._read_raw()
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -161,12 +189,10 @@ class JsonRepository(Generic[T]):
                 if predicate(r):
                     out.append(r)
             except Exception:
-                # on ignore les exceptions dans le prédicat pour robustesse
                 continue
         return out
 
     def find_one(self, predicate: Callable[[Dict[str, Any]], bool]) -> Optional[Dict[str, Any]]:
-        """Premier enregistrement qui matche predicate, ou None."""
         rows = self._read_raw()
         for r in rows:
             try:
