@@ -53,6 +53,17 @@ def _find_wkhtmltopdf_exe() -> Optional[str]:
 
 # ---------------- Utils ---------------- #
 
+def load_client_map(self) -> Dict[str, Any]:
+    """Retourne un dict {client_id: Client} pour l'UI."""
+    from core.services.client_service import ClientService
+    cs = ClientService()
+    out: Dict[str, Any] = {}
+    for c in cs.list_clients():
+        cid = getattr(c, "id", None)
+        if cid:
+            out[cid] = c
+    return out
+
 def _to_dict(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
         return dict(obj)
