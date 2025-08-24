@@ -57,17 +57,20 @@ class JsonRepository(Generic[T]):
                 pass
             return []
 
-    def _write_raw(self, data: Iterable[Mapping[str, Any]]) -> None:
-        # backup
-        if self.filepath.exists():
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = self.filepath.with_suffix(f".{ts}.bak.json")
-            try:
-                shutil.copy2(self.filepath, backup)
-            except Exception:
-                pass
-        with self.filepath.open("w", encoding="utf-8") as f:
-            json.dump(list(data), f, ensure_ascii=False, indent=2)
+    def _write_raw(self, data):
+        self.lock.acquire()
+        try:
+            # conversion datetime -> isoformat
+            def _default(o):
+                import datetime
+                if isinstance(o, (datetime.date, datetime.datetime)):
+                    return o.isoformat()
+                return str(o)
+
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(list(data), f, ensure_ascii=False, indent=2, default=_default)
+        finally:
+            self.lock.release()
 
     # ---------------- Helpers ---------------- #
 
