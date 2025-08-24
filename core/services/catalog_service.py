@@ -24,20 +24,38 @@ class Service(BaseModel):
     id: Optional[str] = None
     ref: Optional[str] = None
     name: str = ""
-    label: Optional[str] = None     # <-- attendu par l'UI
+    label: Optional[str] = None
     description: Optional[str] = None
     price_cents: int = 0
     active: bool = True
+
+    # En franchise de TVA: TTC == HT
+    @property
+    def price_ttc_cent(self) -> int:
+        try:
+            v = getattr(self, "price_cents", 0)
+            return int(v) if v is not None else 0
+        except Exception:
+            return 0
 
 
 class Product(BaseModel):
     id: Optional[str] = None
     ref: Optional[str] = None
     name: str = ""
-    label: Optional[str] = None     # <-- attendu par l'UI
+    label: Optional[str] = None
     description: Optional[str] = None
     price_cents: int = 0
     active: bool = True
+
+    # En franchise de TVA: TTC == HT
+    @property
+    def price_ttc_cent(self) -> int:
+        try:
+            v = getattr(self, "price_cents", 0)
+            return int(v) if v is not None else 0
+        except Exception:
+            return 0
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -79,9 +97,15 @@ class CatalogService:
             # Normalisation: label fallback sur name
             if getattr(obj, "label", None) in (None, ""):
                 try:
-                    setattr(obj, "label", getattr(obj, "name", ""))  # mutation autorisée par défaut
+                    setattr(obj, "label", getattr(obj, "name", ""))  # mutation OK
                 except Exception:
                     pass
+            # Normalisation: price_cents doit être un int >= 0
+            try:
+                val = getattr(obj, "price_cents", 0)
+                setattr(obj, "price_cents", int(val) if val is not None else 0)
+            except Exception:
+                setattr(obj, "price_cents", 0)
             items.append(obj)
         return items
 
@@ -90,7 +114,9 @@ class CatalogService:
         name = payload.get("name") or ""
         if not payload.get("label"):
             payload["label"] = name
-        if payload.get("price_cents") is None:
+        try:
+            payload["price_cents"] = int(payload.get("price_cents") or 0)
+        except Exception:
             payload["price_cents"] = 0
         return payload
 
