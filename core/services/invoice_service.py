@@ -1,23 +1,31 @@
+# core/services/invoice_service.py
 from __future__ import annotations
-import os, json, re
+import os
+import json
+import re
 from pathlib import Path
-import pdfkit  # utilisé si wkhtmltopdf dispo
 from typing import List, Optional, Literal
+
 from pydantic import ValidationError
+import pdfkit  # utilisé si wkhtmltopdf dispo
+
 from core.models.invoice import Invoice, InvoiceLine
 from core.models.quote import Quote
 from core.models.client import Client
 from core.storage.repo import JsonRepository
 
+# --- Chemins de base ---
 ROOT_DIR = Path(__file__).resolve().parents[2]  # erp_sonolight/
 TEMPLATES_DIR = ROOT_DIR / "templates" / "pdf"
 EXPORTS_DIR = ROOT_DIR / "exports"
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data"))
-INVOICES_JSON = os.path.join(DATA_DIR, "invoices.json")
-QUOTES_JSON = os.path.join(DATA_DIR, "quotes.json")
-CLIENTS_JSON = os.path.join(DATA_DIR, "clients.json")
-SETTINGS_JSON = os.path.join(DATA_DIR, "settings.json")
+DATA_DIR = ROOT_DIR / "data"
 
+INVOICES_JSON = DATA_DIR / "invoices.json"
+QUOTES_JSON = DATA_DIR / "quotes.json"
+CLIENTS_JSON = DATA_DIR / "clients.json"
+SETTINGS_JSON = DATA_DIR / "settings.json"
+
+# ---------- Utils JSON ----------
 def _load_json(path: os.PathLike | str):
     p = Path(path)
     if not p.exists():
@@ -27,6 +35,25 @@ def _load_json(path: os.PathLike | str):
     except Exception:
         return None
 
+def _dump_json(path: os.PathLike | str, data) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+# ---------- Formats ----------
+def _cent_to_eur(cents: int) -> str:
+    try:
+        return f"{int(cents)/100:.2f} €"
+    except Exception:
+        return "0.00 €"
+
+def _slug(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r'[\\/:*?"<>|\n\r\t]', "_", text)
+    text = re.sub(r"\s+", " ", text)
+    return text or "Client"
+
+# ---------- PDF helpers ----------
 def _clean_path(p: str) -> str:
     """Corrige 'C\\:\\Program Files\\...' -> 'C:\\Program Files\\...' et normalise."""
     if not p:
@@ -36,7 +63,13 @@ def _clean_path(p: str) -> str:
     return os.path.normpath(p)
 
 def _find_wkhtmltopdf() -> Optional[str]:
-    """Détecte wkhtmltopdf via env, settings.json, chemins connus, PATH."""
+    """
+    Localise wkhtmltopdf.exe :
+    - Variables d'env (WKHTMLTOPDF, WKHTMLTOPDF_CMD)
+    - data/settings.json -> pdf.wkhtmltopdf_path ou wkhtmltopdf_path
+    - chemins Windows connus
+    - PATH
+    """
     # 1) Env
     for env_key in ("WKHTMLTOPDF", "WKHTMLTOPDF_CMD"):
         val = os.environ.get(env_key)
@@ -87,34 +120,10 @@ def _render_pdf_with_weasyprint(html: str, out_path: Path, base_url: Optional[st
     styles = [CSS(filename=str(css_file))] if css_file.exists() else None
     HTML(string=html, base_url=base_url).write_pdf(str(out_path), stylesheets=styles)
 
-def _cent_to_eur(cents: int) -> float:
-    try:
-        return round(int(cents) / 100.0, 2)
-    except Exception:
-        return 0.0
-
-def _load_json(path: str):
-    if not os.path.exists(path): return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-def _dump_json(path: str, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def _slug(text: str) -> str:
-    text = (text or "").strip()
-    text = re.sub(r"[\\/:*?\"<>|\n\r\t]", "_", text)
-    text = re.sub(r"\s+", " ", text)
-    return text or "Client"
-
+# ---------- Service ----------
 class InvoiceService:
-    def __init__(self, path: str = INVOICES_JSON):
-        self.repo = JsonRepository(path, key="id")
+    def __init__(self, path: os.PathLike | str = INVOICES_JSON):
+        self.repo = JsonRepository(str(path), key="id")
 
     # ----------- CRUD/list -----------
     def list_invoices(self) -> List[Invoice]:
@@ -137,7 +146,8 @@ class InvoiceService:
 
     def get_by_id(self, invoice_id: str) -> Optional[Invoice]:
         m = self.repo.find(lambda x: x.get("id") == invoice_id)
-        if not m: return None
+        if not m:
+            return None
         try:
             return Invoice(**m[0])
         except ValidationError:
@@ -178,10 +188,7 @@ class InvoiceService:
         return self.add_invoice(inv)
 
     def gen_balance(self, q: Quote, explicit_amount: Optional[int] = None) -> Invoice:
-        if explicit_amount is not None:
-            remaining = int(explicit_amount)
-        else:
-            remaining = q.remaining_cent()
+        remaining = int(explicit_amount) if explicit_amount is not None else q.remaining_cent()
         inv = Invoice(
             type="SOLDE", status="ISSUED",
             quote_id=q.id, client_id=q.client_id,
@@ -193,23 +200,10 @@ class InvoiceService:
         return self.add_invoice(inv)
 
     def gen_final(self, q: Quote) -> Invoice:
+        # Récapitulatif (peut être enrichi si nécessaire)
         inv = Invoice(
             type="FINALE", status="ISSUED",
             quote_id=q.id, client_id=q.client_id,
-            lines=[InvoiceLine(label=f"Facture finale – devis {q.number}", qty=1.0,
-                               unit_price_ttc_cent=0, total_line_ttc_cent=0)],
-            total_ttc_cent=0,
-            notes="TVA non applicable, art. 293 B du CGI."
-        )
-        return self.add_invoice(inv)
-
-    def gen_final(self, q: Quote) -> Invoice:
-        # Récapitulatif avec rappel du total du devis
-        inv = Invoice(
-            type="FINALE",
-            status="ISSUED",
-            quote_id=q.id,
-            client_id=q.client_id,
             lines=[InvoiceLine(label=f"Facture finale – Récap devis {q.number}", qty=1.0,
                                unit_price_ttc_cent=0, total_line_ttc_cent=0)],
             total_ttc_cent=0,
@@ -245,59 +239,85 @@ class InvoiceService:
         return "Client"
 
     # ----------- export PDF ----------
-def export_invoice_pdf(self, inv) -> Path:
-    """
-    Génére le PDF de facture sans créer d'HTML intermédiaire.
-    Essaie wkhtmltopdf (pdfkit) en priorité, sinon fallback WeasyPrint.
-    """
-    # 1) Rendu HTML en mémoire (on suppose que tu as la méthode _render_invoice_html)
-    html = self._render_invoice_html(inv)
+    def _render_invoice_html(self, inv: Invoice) -> str:
+        """
+        Rend le HTML de facture en mémoire via Jinja2: templates/pdf/invoice.html
+        """
+        from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-    # 2) Prépare sortie
-    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    invoices_dir = EXPORTS_DIR / "factures"
-    invoices_dir.mkdir(parents=True, exist_ok=True)
+        env = Environment(
+            loader=FileSystemLoader(str(TEMPLATES_DIR)),
+            autoescape=select_autoescape(["html", "xml"])
+        )
+        tpl = env.get_template("invoice.html")
 
-    # client_name pour nom fichier (si tu as un map client dans ce service, adapte au besoin)
-    client_name = ""
-    try:
-        clients = self.load_client_map()  # si dispo dans ce service (sinon vire ce bloc)
-        client = clients.get(getattr(inv, "client_id", None))
-        client_name = getattr(client, "name", "") or ""
-    except Exception:
-        pass
+        settings = _load_json(SETTINGS_JSON) or {}
+        company = settings.get("company", {}) if isinstance(settings, dict) else {}
 
-    def _slug(s: str) -> str:
-        import re
-        s = (s or "").strip()
-        s = re.sub(r'[\\/:*?"<>|\n\r\t]', "_", s)
-        s = re.sub(r"\s+", " ", s)
-        return s
+        # client name
+        cname = self._client_name(inv.client_id)
 
-    safe_client = _slug(client_name) or "Client"
-    number = getattr(inv, "number", None) or getattr(inv, "id", "INV")
-    filename = f"{number}_facture_{safe_client}.pdf"
-    out_path = invoices_dir / filename
+        ctx = {
+            "invoice": {
+                "number": inv.number,
+                "type": inv.type,
+                "lines": [
+                    {
+                        "label": ln.label,
+                        "qty": ln.qty,
+                        "unit_price_ttc": _cent_to_eur(ln.unit_price_ttc_cent),
+                        "total_ttc": _cent_to_eur(ln.total_line_ttc_cent),
+                    } for ln in inv.lines
+                ],
+                "total_ttc": _cent_to_eur(inv.total_ttc_cent),
+            },
+            "client": {"name": cname},
+            "company": {
+                "name": company.get("name", "Ma Société"),
+                "email": company.get("email", ""),
+                "address": company.get("address", ""),
+                "siret": company.get("siret", ""),
+            },
+        }
 
-    base_url = str(TEMPLATES_DIR.resolve())
+        return tpl.render(**ctx)
 
-    # 3) wkhtmltopdf d'abord
-    wkhtml = _find_wkhtmltopdf()
-    if wkhtml:
-        try:
-            config = pdfkit.configuration(wkhtmltopdf=wkhtml)
-            options = {
-                "enable-local-file-access": None,
-                "quiet": "",
-                "encoding": "UTF-8",
-            }
-            css_path = str((TEMPLATES_DIR / "stylesheet.css").resolve())
-            pdfkit.from_string(html, str(out_path), options=options, configuration=config, css=css_path)
-            return out_path
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("Échec wkhtmltopdf (%s). Fallback WeasyPrint...", e)
+    def export_invoice_pdf(self, inv: Invoice, out_dir: Optional[str] = None) -> str:
+        """
+        Génére le PDF de facture (PDF only).
+        Essaie wkhtmltopdf (pdfkit) en priorité, sinon fallback WeasyPrint.
+        """
+        html = self._render_invoice_html(inv)
 
-    # 4) Fallback WeasyPrint
-    _render_pdf_with_weasyprint(html, out_path, base_url=base_url)
-    return out_path
+        exports_dir = Path(out_dir) if out_dir else (EXPORTS_DIR / "factures")
+        exports_dir.mkdir(parents=True, exist_ok=True)
+
+        cname = self._client_name(inv.client_id)
+        safe_client = _slug(cname)
+        type_code = {"ACOMPTE": "FAC-A", "SOLDE": "FAC-S", "FINALE": "FAC-F"}.get(inv.type, "FAC-X")
+        tail = (inv.number or inv.id).split("-")[-1]
+        filename = f"{type_code}-{tail} ({safe_client}).pdf"
+        out_path = exports_dir / filename
+
+        base_url = str(TEMPLATES_DIR.resolve())
+
+        # 1) wkhtmltopdf d'abord
+        wkhtml = _find_wkhtmltopdf()
+        if wkhtml:
+            try:
+                config = pdfkit.configuration(wkhtmltopdf=wkhtml)
+                options = {
+                    "enable-local-file-access": None,
+                    "quiet": "",
+                    "encoding": "UTF-8",
+                }
+                css_path = str((TEMPLATES_DIR / "stylesheet.css").resolve())
+                pdfkit.from_string(html, str(out_path), options=options, configuration=config, css=css_path)
+                return str(out_path)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Échec wkhtmltopdf (%s). Fallback WeasyPrint...", e)
+
+        # 2) Fallback WeasyPrint
+        _render_pdf_with_weasyprint(html, out_path, base_url=base_url)
+        return str(out_path)
