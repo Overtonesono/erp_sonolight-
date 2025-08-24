@@ -19,6 +19,15 @@ from core.services.catalog_service import CatalogService
 # Modèles du projet
 from core.models.quote import Quote, QuoteLine  # <-- plus d'import Payment ici
 
+def _cent_to_str(c: int) -> str:
+    try:
+        return f"{(c or 0)/100:.2f} €"
+    except Exception:
+        return "0.00 €"
+
+def _escape_html(s: Any) -> str:
+    from html import escape
+    return escape("" if s is None else str(s))
 
 # ---------------- Utils ---------------- #
 
@@ -310,3 +319,133 @@ class QuoteService:
             cid = getattr(c, "id", None) or getattr(c, "id", None)
             out[cid] = c
         return out
+
+    def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
+        """
+        Génère un PDF de devis dans exports/quotes/.
+        - Utilise WeasyPrint si dispo; sinon exporte un HTML prêt à imprimer.
+        - Retourne le chemin du fichier généré.
+        """
+        import os
+        from datetime import datetime as _dt
+
+        q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
+        number = getattr(q, "number", None) or "DV-XXXX-XXXX"
+        created_str = getattr(q, "created_at", None)
+        if hasattr(created_str, "strftime"):
+            created_fmt = created_str.strftime("%Y-%m-%d")
+        else:
+            created_fmt = _dt.now().strftime("%Y-%m-%d")
+
+        # Client (si map côté UI, ici on met au minimum l'id)
+        client_id = getattr(q, "client_id", None)
+        client_name = f"Client {client_id or ''}".strip()
+
+        # Lignes
+        lines = getattr(q, "items", None)
+        if lines is None:
+            lines = getattr(q, "lines", [])  # Quote hydraté assure QuoteLine
+        rows_html = []
+        for ln in lines:
+            # Accès attributs sûrs
+            ref = getattr(ln, "ref", "") or ""
+            label = getattr(ln, "label", "") or ""
+            desc = getattr(ln, "description", "") or ""
+            unit = getattr(ln, "unit", "") or ""
+            qty = getattr(ln, "qty", 1) or 1
+            pc = int(getattr(ln, "price_cents", 0) or 0)
+            total = int(getattr(ln, "total_ttc_cent", int(round(pc * float(qty)))) or 0)
+
+            rows_html.append(
+                f"<tr>"
+                f"<td>{_escape_html(ref)}</td>"
+                f"<td><div><strong>{_escape_html(label)}</strong></div>"
+                f"<div style='color:#666;font-size:12px'>{_escape_html(desc)}</div></td>"
+                f"<td style='text-align:center'>{_escape_html(unit)}</td>"
+                f"<td style='text-align:right'>{qty:g}</td>"
+                f"<td style='text-align:right'>{_cent_to_str(pc)}</td>"
+                f"<td style='text-align:right'>{_cent_to_str(total)}</td>"
+                f"</tr>"
+            )
+
+        total_ttc = int(getattr(q, "total_ttc_cent", 0) or 0)
+        total_ht = int(getattr(q, "total_ht_cent", total_ttc) or 0)
+
+        # HTML minimaliste (compatible impression)
+        html = f"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>Devis {number}</title>
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 14px; color:#111; }}
+  h1 {{ font-size: 20px; margin:0 0 4px 0; }}
+  .meta {{ margin-bottom: 16px; }}
+  table {{ width:100%; border-collapse: collapse; }}
+  th, td {{ border:1px solid #ddd; padding:8px; vertical-align: top; }}
+  th {{ background:#f5f5f5; text-align:left; }}
+  tfoot td {{ border:none; }}
+  .totals td {{ padding:6px 8px; }}
+  .right {{ text-align:right; }}
+  .muted {{ color:#666; font-size:12px; }}
+</style>
+</head>
+<body>
+  <h1>Devis { _escape_html(number) }</h1>
+  <div class="meta">
+    <div><strong>Date :</strong> { _escape_html(created_fmt) }</div>
+    <div><strong>Client :</strong> { _escape_html(client_name) }</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:12%">Réf</th>
+        <th>Libellé / Description</th>
+        <th style="width:10%">Unité</th>
+        <th style="width:10%" class="right">Qté</th>
+        <th style="width:14%" class="right">Prix</th>
+        <th style="width:14%" class="right">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) or '<tr><td colspan="6" class="muted">Aucune ligne</td></tr>'}
+    </tbody>
+  </table>
+
+  <table style="width:100%; margin-top:12px; border: none;">
+    <tr class="totals">
+      <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
+      <td style="border:none"></td>
+      <td class="right" style="border:none"><strong>Total HT</strong></td>
+      <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ht)}</strong></td>
+    </tr>
+    <tr class="totals">
+      <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
+      <td style="border:none"></td>
+      <td class="right" style="border:none"><strong>Total TTC</strong></td>
+      <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ttc)}</strong></td>
+    </tr>
+    <tr>
+      <td colspan="6" class="muted">TVA non applicable, art. 293B du CGI.</td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+        # Dossier sortie
+        base = Path(__file__).resolve().parents[2]
+        out_dir = base / "exports" / "quotes"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Si WeasyPrint dispo -> PDF ; sinon HTML
+        try:
+            from weasyprint import HTML  # type: ignore
+            out_path = out_dir / f"{number}.pdf"
+            HTML(string=html, base_url=str(base)).write_pdf(str(out_path))
+            return str(out_path)
+        except Exception:
+            # Fallback HTML
+            out_path = out_dir / f"{number}.html"
+            out_path.write_text(html, encoding="utf-8")
+            return str(out_path)
