@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Generic, Iterable, List, Mapping, Optional, Type, TypeVar, Union
+from typing import Any, Dict, Generic, Iterable, List, Mapping, Optional, TypeVar, Union
 from uuid import uuid4
 
 try:
@@ -25,13 +25,14 @@ class JsonRepository(Generic[T]):
     """
     Repo JSON générique.
     - Stocke une liste d'objets (dict ou BaseModel Pydantic) dans un fichier JSON.
-    - Chaque objet possède un champ 'id' (str).
+    - Chaque objet possède un champ 'key' (par défaut 'id').
     - Gère backup horodaté avant écriture.
     """
 
-    def __init__(self, filepath: Union[str, Path], entity_name: str = "entity") -> None:
+    def __init__(self, filepath: Union[str, Path], entity_name: str = "entity", key: str = "id") -> None:
         self.filepath = Path(filepath)
         self.entity_name = entity_name
+        self.key = key  # clé primaire (ex: 'id' par défaut)
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         if not self.filepath.exists():
             self._write_raw([])
@@ -50,7 +51,10 @@ class JsonRepository(Generic[T]):
         except json.JSONDecodeError:
             # Fichier corrompu → sauvegarde et repars vide
             backup = self.filepath.with_suffix(".corrupt.json")
-            shutil.copy2(self.filepath, backup)
+            try:
+                shutil.copy2(self.filepath, backup)
+            except Exception:
+                pass
             return []
 
     def _write_raw(self, data: Iterable[Mapping[str, Any]]) -> None:
@@ -72,10 +76,9 @@ class JsonRepository(Generic[T]):
         if _HAS_PYDANTIC and isinstance(item, BaseModel):
             return item.model_dump()  # pydantic v2
         if hasattr(item, "model_dump"):
-            return item.model_dump()  # si BaseModel-like
+            return item.model_dump()  # BaseModel-like
         if isinstance(item, Mapping):
             return dict(item)
-        # fallback (objet arbitraire)
         return dict(item.__dict__)  # type: ignore[arg-type]
 
     # ---------------- CRUD ---------------- #
@@ -83,41 +86,44 @@ class JsonRepository(Generic[T]):
     def list_all(self) -> List[Dict[str, Any]]:
         return self._read_raw()
 
-    def get_by_id(self, obj_id: str) -> Optional[Dict[str, Any]]:
+    def get_by_id(self, obj_id: Any) -> Optional[Dict[str, Any]]:
+        k = self.key
         for it in self._read_raw():
-            if str(it.get("id")) == str(obj_id):
+            if str(it.get(k)) == str(obj_id):
                 return it
         return None
 
     def add(self, item: T) -> Dict[str, Any]:
         record = self._to_dict(item)
-        if not record.get("id"):
-            record["id"] = uuid4().hex
+        k = self.key
+        if not record.get(k):
+            # si la clé primaire est 'id', on génère un UUID par défaut
+            record[k] = uuid4().hex if k == "id" else uuid4().hex
         data = self._read_raw()
         # éviter doublon
-        if any(str(d.get("id")) == str(record["id"]) for d in data):
-            raise ValueError(f"{self.entity_name} with id={record['id']} already exists")
+        if any(str(d.get(k)) == str(record[k]) for d in data):
+            raise ValueError(f"{self.entity_name} with {k}={record[k]} already exists")
         data.append(record)
         self._write_raw(data)
         return record
 
     def update(self, item: T) -> Dict[str, Any]:
         """
-        Met à jour sur clé 'id'. Soulève ValueError si id absent ou introuvable.
+        Met à jour sur clé primaire `self.key`. Soulève ValueError si clé absente ou introuvable.
         """
         record = self._to_dict(item)
-        obj_id = record.get("id")
+        k = self.key
+        obj_id = record.get(k)
         if not obj_id:
-            raise ValueError(f"Cannot update {self.entity_name} without 'id'")
+            raise ValueError(f"Cannot update {self.entity_name} without '{k}'")
         data = self._read_raw()
         for idx, existing in enumerate(data):
-            if str(existing.get("id")) == str(obj_id):
-                # merge champ à champ (préserve champs inconnus)
-                merged = {**existing, **record}
+            if str(existing.get(k)) == str(obj_id):
+                merged = {**existing, **record}  # merge champ à champ
                 data[idx] = merged
                 self._write_raw(data)
                 return merged
-        raise ValueError(f"{self.entity_name} with id={obj_id} not found")
+        raise ValueError(f"{self.entity_name} with {k}={obj_id} not found")
 
     def upsert(self, item: T) -> Dict[str, Any]:
         try:
@@ -125,9 +131,10 @@ class JsonRepository(Generic[T]):
         except ValueError:
             return self.add(item)
 
-    def delete(self, obj_id: str) -> bool:
+    def delete(self, obj_id: Any) -> bool:
+        k = self.key
         data = self._read_raw()
-        new_data = [d for d in data if str(d.get("id")) != str(obj_id)]
+        new_data = [d for d in data if str(d.get(k)) != str(obj_id)]
         changed = len(new_data) != len(data)
         if changed:
             self._write_raw(new_data)
