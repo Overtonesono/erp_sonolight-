@@ -5,7 +5,7 @@ import shutil
 import threading
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Generic, Iterable, List, Mapping, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, TypeVar, Union
 from uuid import uuid4
 
 try:
@@ -146,3 +146,32 @@ class JsonRepository(Generic[T]):
         if changed:
             self._write_raw(new_data)
         return changed
+
+    # ---------------- Recherches (compat .find) ---------------- #
+
+    def find(self, predicate: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
+        """
+        Retourne tous les enregistrements pour lesquels predicate(record) == True.
+        Compatible avec les usages: repo.find(lambda d: d.get("quote_id") == qid)
+        """
+        rows = self._read_raw()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                if predicate(r):
+                    out.append(r)
+            except Exception:
+                # on ignore les exceptions dans le prédicat pour robustesse
+                continue
+        return out
+
+    def find_one(self, predicate: Callable[[Dict[str, Any]], bool]) -> Optional[Dict[str, Any]]:
+        """Premier enregistrement qui matche predicate, ou None."""
+        rows = self._read_raw()
+        for r in rows:
+            try:
+                if predicate(r):
+                    return r
+            except Exception:
+                continue
+        return None
