@@ -28,6 +28,43 @@ def money_cent_to_str(c: int) -> str:
     try: return f"{c/100:.2f} €"
     except: return "0.00 €"
 
+def _ensure_eur_payload(it) -> dict:
+    """
+    Convertit l'objet retourné par ProductServiceForm en dict prêt pour CatalogService:
+    - garde id/ref/name/label/description/unit/active
+    - si it.price_eur existe => l'utilise
+    - sinon si it.price_cents existe => convertit en euros
+    - sinon laisse à 0.0
+    """
+    def _get(o, name, default=None):
+        return getattr(o, name, o.get(name, default)) if isinstance(o, dict) else getattr(o, name, default)
+
+    payload = {
+        "id": _get(it, "id"),
+        "ref": _get(it, "ref"),
+        "name": _get(it, "name", "") or _get(it, "label", ""),
+        "label": _get(it, "label"),
+        "description": _get(it, "description"),
+        "unit": _get(it, "unit", ""),
+        "active": bool(_get(it, "active", True)),
+    }
+    if hasattr(it, "price_eur") or (isinstance(it, dict) and "price_eur" in it):
+        val = _get(it, "price_eur", 0.0)
+        try:
+            payload["price_eur"] = float(str(val).replace(",", "."))
+        except Exception:
+            payload["price_eur"] = 0.0
+    else:
+        pc = _get(it, "price_cents", None)
+        if pc is None:
+            # tenter anciens champs
+            pc = _get(it, "price_ttc_cent", _get(it, "price_ht_cent", _get(it, "price_cent", None)))
+        try:
+            payload["price_eur"] = round(float(pc or 0) / 100.0, 2)
+        except Exception:
+            payload["price_eur"] = 0.0
+    return payload
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -234,8 +271,11 @@ class MainWindow(QMainWindow):
             if not it:
                 QMessageBox.warning(self, "Validation", "Référence et libellé sont obligatoires.")
                 return
-            if which == "product": self.catalog_service.add_product(it)  # type: ignore
-            else: self.catalog_service.add_service(it)  # type: ignore
+            payload = _ensure_eur_payload(it)
+            if which == "product":
+                self.catalog_service.add_product(payload)  # type: ignore
+            else:
+                self.catalog_service.add_service(payload)  # type: ignore
             self._refresh_catalog()
 
     def _catalog_edit(self, which: str):
@@ -253,8 +293,11 @@ class MainWindow(QMainWindow):
             if not it:
                 QMessageBox.warning(self, "Validation", "Référence et libellé sont obligatoires.")
                 return
-            if which == "product": self.catalog_service.update_product(it)  # type: ignore
-            else: self.catalog_service.update_service(it)  # type: ignore
+            payload = _ensure_eur_payload(it)
+            if which == "product":
+                self.catalog_service.update_product(payload)  # type: ignore
+            else:
+                self.catalog_service.update_service(payload)  # type: ignore
             self._refresh_catalog()
 
     def _catalog_del(self, which: str):
