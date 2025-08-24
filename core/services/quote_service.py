@@ -6,7 +6,7 @@ from datetime import datetime, date
 from types import SimpleNamespace
 
 try:
-    from pydantic import BaseModel
+    from pydantic import BaseModel  # noqa: F401
     _HAS_PYDANTIC = True
 except Exception:  # pragma: no cover
     _HAS_PYDANTIC = False
@@ -16,12 +16,14 @@ except Exception:  # pragma: no cover
 
 from core.storage.json_repo import JsonRepository
 from core.services.catalog_service import CatalogService
-# Modèles du projet
-from core.models.quote import Quote, QuoteLine  # <-- plus d'import Payment ici
+from core.models.quote import Quote, QuoteLine
+
+
+# ---------- Helpers génériques ---------- #
 
 def _cent_to_str(c: int) -> str:
     try:
-        return f"{(c or 0)/100:.2f} €"
+        return f"{(c or 0) / 100:.2f} €"
     except Exception:
         return "0.00 €"
 
@@ -31,15 +33,13 @@ def _escape_html(s: Any) -> str:
 
 def _find_wkhtmltopdf_exe() -> Optional[str]:
     import os, shutil
-    # 1) Variable d'env prioritaire
     env_path = os.environ.get("WKHTMLTOPDF_PATH")
     if env_path and os.path.isfile(env_path):
         return env_path
-    # 2) Dans le PATH
     p = shutil.which("wkhtmltopdf")
     if p:
         return p
-    # 3) Emplacements Windows fréquents
+    # Emplacements Windows fréquents
     candidates = [
         r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
         r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe",
@@ -50,19 +50,6 @@ def _find_wkhtmltopdf_exe() -> Optional[str]:
         if os.path.isfile(c):
             return c
     return None
-
-# ---------------- Utils ---------------- #
-
-def load_client_map(self) -> Dict[str, Any]:
-    """Retourne un dict {client_id: Client} pour l'UI."""
-    from core.services.client_service import ClientService
-    cs = ClientService()
-    out: Dict[str, Any] = {}
-    for c in cs.list_clients():
-        cid = getattr(c, "id", None)
-        if cid:
-            out[cid] = c
-    return out
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
@@ -77,16 +64,12 @@ def _to_dict(obj: Any) -> Dict[str, Any]:
 def _price_to_cents(payload: Dict[str, Any]) -> int:
     """
     Retourne un prix en CENTIMES depuis divers champs possibles.
-    Accepte:
-      - Centimes: price_cents, price_cent, price_ttc_cent, price_ht_cent
-      - Euros:    price_eur, price, unit_price_eur, unit_price, priceTtcEur, ttc_eur
-      - Et en dernier recours: n'importe quelle clé contenant 'price' avec valeur numérique.
-    Gère virgule -> point, espaces, et le symbole €.
+    Gère virgules, espaces, symbole €, etc.
     """
     from decimal import Decimal, InvalidOperation
     import re
 
-    # 1) champs en centimes déjà OK
+    # Champs déjà en centimes
     for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
         if k in payload and payload[k] not in (None, ""):
             try:
@@ -103,30 +86,27 @@ def _price_to_cents(payload: Dict[str, Any]) -> int:
             except Exception:
                 return None
         s = str(val)
-        # retire tout sauf chiffres, signe, virgule, point
-        s = re.sub(r"[^0-9,.\-]", "", s)
-        # virgule -> point
+        s = re.sub(r"[^0-9,.\-]", "", s)  # enlève € et espaces
         s = s.replace(",", ".")
         try:
             return Decimal(s)
         except (InvalidOperation, ValueError):
             return None
 
-    # 2) champs en euros (liste connue)
+    # Champs en euros usuels
     euro_keys = ("price_eur", "price", "unit_price_eur", "unit_price", "priceTtcEur", "ttc_eur")
     for k in euro_keys:
         if k in payload and payload[k] not in (None, ""):
             d = _clean_to_decimal(payload[k])
             if d is not None:
-                # arrondi au centime
-                return max(0, int((d * 100).quantize(Decimal("1"))))
+                return max(0, int(d * 100))  # arrondi vers 0 → suffisant ici
 
-    # 3) fallback: n'importe quelle clé contenant 'price'
+    # Fallback: toute clé contenant 'price'
     for k, v in payload.items():
         if "price" in k.lower() and v not in (None, ""):
             d = _clean_to_decimal(v)
             if d is not None:
-                return max(0, int((d * 100).quantize(Decimal("1"))))
+                return max(0, int(d * 100))
 
     return 0
 
@@ -159,7 +139,7 @@ def _parse_date(s: Any) -> Optional[date]:
         return None
 
 
-# ---------------- Service ---------------- #
+# ---------- Service ---------- #
 
 class QuoteService:
     def __init__(self, data_dir: Optional[str | Path] = None) -> None:
@@ -168,7 +148,7 @@ class QuoteService:
         self.repo = JsonRepository(base / "quotes.json", entity_name="quote", key="id")
         self.catalog = CatalogService()
 
-    # ---------- Enrichissement lignes ---------- #
+    # ----- Enrichissement lignes ----- #
 
     def _find_catalog_by_ref(self, ref: str) -> Optional[Dict[str, Any]]:
         for p in self.catalog.list_products():
@@ -197,37 +177,52 @@ class QuoteService:
         except Exception:
             return None
 
-def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Complète la ligne dict: description, label, unit, price_cents si manquants
-    depuis le catalogue (product_id/service_id ou ref).
-    Gère correctement les prix en euros (price_eur, unit_price, ...).
-    """
-    src: Optional[Dict[str, Any]] = (
-        self._get_product_dict(line.get("product_id")) or
-        self._get_service_dict(line.get("service_id"))
-    )
-    if not src and line.get("ref"):
-        src = self._find_catalog_by_ref(line["ref"])
+    def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Complète la ligne dict: description, label, unit, price_cents si manquants
+        depuis le catalogue (product_id/service_id ou ref). Gère les prix en euros.
+        """
+        src: Optional[Dict[str, Any]] = (
+            self._get_product_dict(line.get("product_id")) or
+            self._get_service_dict(line.get("service_id"))
+        )
+        if not src and line.get("ref"):
+            src = self._find_catalog_by_ref(line["ref"])
 
-    label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
-    unit = line.get("unit") if line.get("unit") is not None else (src.get("unit") if src else "")
-    desc  = line.get("description") or (src.get("description") if src else None) or (label or "")
+        label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
+        unit = line.get("unit") if line.get("unit") is not None else ((src.get("unit") if src else "") or "")
+        desc = line.get("description") or (src.get("description") if src else None) or (label or "")
 
-    # ---- Prix ----
-    price_cents = _price_to_cents(line)
-    if (price_cents in (None, "", 0)) and src:
-        price_cents = _price_to_cents(src)
-    try:
-        price_cents = int(price_cents or 0)
-    except Exception:
-        price_cents = 0
-            
-    # ---------- Hydratation Pydantic ---------- #
+        # Prix : priorité au contenu de la ligne, sinon fiche catalogue
+        price_cents = _price_to_cents(line)
+        if (price_cents in (None, "", 0)) and src:
+            price_cents = _price_to_cents(src)
+        try:
+            price_cents = int(price_cents or 0)
+        except Exception:
+            price_cents = 0
+
+        out = dict(line)
+        out.setdefault("ref", (src.get("ref") if src else None) if not out.get("ref") else out.get("ref"))
+        out["label"] = label or ""
+        out["unit"] = unit or ""
+        out["description"] = desc or ""
+        out["price_cents"] = price_cents
+
+        if not out.get("item_type"):
+            if out.get("product_id"):
+                out["item_type"] = "product"
+            elif out.get("service_id"):
+                out["item_type"] = "service"
+            else:
+                out["item_type"] = "item"
+        return out
+
+    # ----- Hydratation Pydantic ----- #
 
     def _hydrate_line(self, d: Dict[str, Any]) -> QuoteLine:
         e = self._enrich_line_dict(d)
-        # si malgré tout c'est 0 et qu'on a un price_eur dans la source brute, re-convertir
+        # Ultime sécurité si 0 et que la source brute a un autre champ prix
         if int(e.get("price_cents") or 0) == 0:
             pc = _price_to_cents(d)
             if pc:
@@ -235,9 +230,9 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
         qty = _qty_to_float(e.get("qty", e.get("quantity", 1)))
         pc = int(e.get("price_cents") or 0)
         e["qty"] = qty
-        e["total_ttc_cent"] = int(round(pc * qty))  # TTC = HT
+        e["total_ttc_cent"] = int(round(pc * qty))  # TTC = HT (293B)
         return QuoteLine.model_validate(e) if _HAS_PYDANTIC and hasattr(QuoteLine, "model_validate") else QuoteLine(**e)  # type: ignore
-        
+
     def _hydrate_payment_obj(self, d: Dict[str, Any]) -> SimpleNamespace:
         """Retourne un petit objet avec .at/.amount_cent/.method/.invoice_id/.kind"""
         at_dt = _parse_dt(d.get("at")) or _parse_dt(d.get("date"))
@@ -281,16 +276,14 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
         else:
             qd["lines"] = [ln.model_dump() if hasattr(ln, "model_dump") else _to_dict(ln) for ln in line_objs]
 
-        qd["payments"] = [vars(p) for p in pay_objs]  # dicts pour hydratation Pydantic
-
+        qd["payments"] = [vars(p) for p in pay_objs]
         qd["total_ht_cent"] = total
         qd["total_ttc_cent"] = total
 
         q = Quote.model_validate(qd) if _HAS_PYDANTIC and hasattr(Quote, "model_validate") else Quote(**qd)  # type: ignore
 
-        # Après hydratation, on remplace la liste par les objets pour l’UI (attributs .at etc.)
+        # remplacer q.payments par objets simples (at, amount_cent…)
         try:
-            # q.payments peut être list[...] (pydantic) → on force des objets simples
             object_payments = [self._hydrate_payment_obj(_to_dict(p)) for p in (q.payments or [])]
             setattr(q, "payments", object_payments)  # type: ignore
         except Exception:
@@ -298,7 +291,7 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
 
         return q
 
-    # ---------- Numérotation ---------- #
+    # ----- Numérotation ----- #
 
     def _next_quote_number(self) -> str:
         """Génère DV-YYYY-#### en incrémentant dans l'année courante."""
@@ -315,9 +308,9 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
                         max_n = n
                 except Exception:
                     continue
-        return f"{prefix}{max_n+1:04d}"
+        return f"{prefix}{max_n + 1:04d}"
 
-    # ---------- Recalcul (appel UI) ---------- #
+    # ----- Recalcul (appel UI) ----- #
 
     def recalc_totals(self, quote: Quote | Dict[str, Any]) -> Quote | Dict[str, Any]:
         is_dict = isinstance(quote, dict)
@@ -340,13 +333,17 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
             setattr(quote, "items", line_objs)  # type: ignore
         elif hasattr(quote, "lines"):
             setattr(quote, "lines", line_objs)  # type: ignore
-        try: setattr(quote, "total_ht_cent", total)
-        except Exception: pass
-        try: setattr(quote, "total_ttc_cent", total)
-        except Exception: pass
+        try:
+            setattr(quote, "total_ht_cent", total)
+        except Exception:
+            pass
+        try:
+            setattr(quote, "total_ttc_cent", total)
+        except Exception:
+            pass
         return quote
 
-    # ---------- CRUD (retours hydratés) ---------- #
+    # ----- CRUD (retours hydratés) ----- #
 
     def list_quotes(self) -> List[Quote]:
         return [self._hydrate_quote(d) for d in self.repo.list_all()]
@@ -372,19 +369,26 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
     def delete_quote(self, quote_id: str) -> bool:
         return self.repo.delete(quote_id)
 
-    # ---------- Divers ---------- #
+    # ----- Divers ----- #
 
     def list_by_client(self, client_id: str) -> List[Quote]:
         return [self._hydrate_quote(d) for d in self.repo.find(lambda d: d.get("client_id") == client_id)]
 
     def load_client_map(self) -> Dict[str, Any]:
+        """
+        Retourne un dict {client_id: Client} utilisé par l'UI (MainWindow).
+        Import local pour éviter les imports circulaires.
+        """
         from core.services.client_service import ClientService
         cs = ClientService()
-        out = {}
+        out: Dict[str, Any] = {}
         for c in cs.list_clients():
-            cid = getattr(c, "id", None) or getattr(c, "id", None)
-            out[cid] = c
+            cid = getattr(c, "id", None)
+            if cid:
+                out[cid] = c
         return out
+
+    # ----- Export PDF ----- #
 
     def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
         """
@@ -394,7 +398,7 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
         """
         from datetime import datetime as _dt
         from pathlib import Path
-        import pdfkit, os
+        import pdfkit
 
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
@@ -488,28 +492,22 @@ def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
 </body>
 </html>"""
 
-        # Dossier sortie: exports/devis/<NUMERO>.pdf
         project_root = Path(__file__).resolve().parents[2]
         out_dir = project_root / "exports" / "devis"
         out_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = out_dir / f"{number}.pdf"
 
-        # Configuration wkhtmltopdf (autodétection)
         wkhtml = _find_wkhtmltopdf_exe()
         if not wkhtml:
             raise RuntimeError(
-                "wkhtmltopdf introuvable. Installez-le puis redémarrez l'application.\n"
-                "Vous pouvez aussi définir la variable d'environnement WKHTMLTOPDF_PATH "
-                "vers l'exécutable wkhtmltopdf.exe."
+                "wkhtmltopdf introuvable. Installez-le puis relancez l'application.\n"
+                "Ou définissez la variable d'environnement WKHTMLTOPDF_PATH vers wkhtmltopdf.exe."
             )
         config = pdfkit.configuration(wkhtmltopdf=wkhtml)
-
-        # Génération PDF (depuis la string HTML, sans fichier temporaire persistant)
         options = {
             "quiet": "",
             "encoding": "UTF-8",
-            "enable-local-file-access": None,  # par sécurité si images locales plus tard
+            "enable-local-file-access": None,
         }
         pdfkit.from_string(html, str(pdf_path), configuration=config, options=options)
         return str(pdf_path)
-
