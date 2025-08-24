@@ -500,11 +500,16 @@ class MainWindow(QMainWindow):
     
     def _quote_export_pdf(self):
         qid = self._selected_quote_id()
-        if not qid: QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
+        if not qid:
+            QMessageBox.information(self, "Devis", "Sélectionne un devis."); return
         q = self.quote_service.get_by_id(qid)
-        if not q: QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
-        out = self.quote_service.export_quote_pdf(q)
-        QMessageBox.information(self, "PDF devis", f"Fichier généré :\n{out}")
+        if not q:
+            QMessageBox.warning(self, "Devis", "Impossible de charger ce devis."); return
+        try:
+            out = self.quote_service.export_quote_pdf(q)
+            QMessageBox.information(self, "PDF devis", f"Fichier généré :\n{out}")
+        except Exception as e:
+            QMessageBox.critical(self, "PDF devis", str(e))
     
     def _quote_refuse(self):
         qid = self._selected_quote_id()
