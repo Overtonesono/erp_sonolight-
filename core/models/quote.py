@@ -10,7 +10,6 @@ class QuoteLine(BaseModel):
     item_id: Optional[str] = None
     item_type: Literal["product", "service"] = "service"
     label: str
-    # ✨ Nouveau : description détaillée
     description: Optional[str] = None
     qty: float = 1.0
     unit_price_ttc_cent: int = 0
@@ -21,9 +20,9 @@ class PaymentRecord(BaseModel):
     id: str = Field(default_factory=gen_id)
     kind: Literal["ACOMPTE", "SOLDE"] = "ACOMPTE"
     amount_cent: int
-    method: Optional[str] = None   # CB, VIREMENT, etc.
-    at: datetime = Field(default_factory=datetime.utcnow)  # date/heure paiement
-    invoice_id: Optional[str] = None  # facture liée (si générée)
+    method: Optional[str] = None
+    at: datetime = Field(default_factory=datetime.utcnow)
+    invoice_id: Optional[str] = None
 
 class Quote(BaseModel):
     id: str = Field(default_factory=gen_id)
@@ -34,15 +33,15 @@ class Quote(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     decided_at: Optional[datetime] = None
 
-    # ✨ NOUVEAU : date de l’évènement
     event_date: Optional[date] = None
-
     lines: List[QuoteLine] = Field(default_factory=list)
     total_ttc_cent: int = 0
 
-    # ✨ Paiements stockés au niveau du devis (master)
     payments: List[PaymentRecord] = Field(default_factory=list)
     notes: Optional[str] = None
+
+    # 👉 Nouveau champ pour le service PDF
+    terms: Optional[str] = None
 
     # helpers
     def paid_deposit_cent(self) -> int:
@@ -56,3 +55,6 @@ class Quote(BaseModel):
 
     def remaining_cent(self) -> int:
         return max(0, self.total_ttc_cent - self.paid_total_cent())
+
+    class Config:
+        extra = "ignore"  # tolère d’anciennes clés dans les JSON
