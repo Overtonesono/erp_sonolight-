@@ -1,5 +1,7 @@
 from __future__ import annotations
 import os, json, re
+from pathlib import Path
+import pdfkit  # utilisé si wkhtmltopdf dispo
 from typing import List, Optional, Literal
 from pydantic import ValidationError
 from core.models.invoice import Invoice, InvoiceLine
@@ -7,11 +9,89 @@ from core.models.quote import Quote
 from core.models.client import Client
 from core.storage.repo import JsonRepository
 
+ROOT_DIR = Path(__file__).resolve().parents[2]  # erp_sonolight/
+TEMPLATES_DIR = ROOT_DIR / "templates" / "pdf"
+EXPORTS_DIR = ROOT_DIR / "exports"
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data"))
 INVOICES_JSON = os.path.join(DATA_DIR, "invoices.json")
 QUOTES_JSON = os.path.join(DATA_DIR, "quotes.json")
 CLIENTS_JSON = os.path.join(DATA_DIR, "clients.json")
 SETTINGS_JSON = os.path.join(DATA_DIR, "settings.json")
+
+def _load_json(path: os.PathLike | str):
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _clean_path(p: str) -> str:
+    """Corrige 'C\\:\\Program Files\\...' -> 'C:\\Program Files\\...' et normalise."""
+    if not p:
+        return ""
+    p = p.strip().strip('"').strip("'")
+    p = p.replace("\\:", ":")
+    return os.path.normpath(p)
+
+def _find_wkhtmltopdf() -> Optional[str]:
+    """Détecte wkhtmltopdf via env, settings.json, chemins connus, PATH."""
+    # 1) Env
+    for env_key in ("WKHTMLTOPDF", "WKHTMLTOPDF_CMD"):
+        val = os.environ.get(env_key)
+        if val:
+            path = _clean_path(val)
+            if Path(path).is_file():
+                return path
+
+    # 2) settings.json
+    s = _load_json(SETTINGS_JSON) or {}
+    if isinstance(s, dict):
+        pdf_conf = s.get("pdf", {}) if isinstance(s.get("pdf"), dict) else {}
+        wk = pdf_conf.get("wkhtmltopdf_path") or s.get("wkhtmltopdf_path")
+        if wk:
+            path = _clean_path(wk)
+            if Path(path).is_file():
+                return path
+
+    # 3) Chemins Windows fréquents
+    candidates = [
+        r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
+        r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe",
+    ]
+    for c in candidates:
+        if Path(c).is_file():
+            return c
+
+    # 4) PATH
+    from shutil import which
+    found = which("wkhtmltopdf")
+    if found:
+        return _clean_path(found)
+
+    return None
+
+def _render_pdf_with_weasyprint(html: str, out_path: Path, base_url: Optional[str]) -> None:
+    """Fallback WeasyPrint (si wkhtmltopdf absent)."""
+    try:
+        from weasyprint import HTML, CSS
+    except Exception as e:
+        raise RuntimeError(
+            "Aucun wkhtmltopdf trouvé et WeasyPrint n'est pas installé. "
+            "Installe WeasyPrint (pip install weasyprint) ou configure wkhtmltopdf.\n"
+            f"Détails: {e}"
+        ) from e
+
+    css_file = TEMPLATES_DIR / "stylesheet.css"
+    styles = [CSS(filename=str(css_file))] if css_file.exists() else None
+    HTML(string=html, base_url=base_url).write_pdf(str(out_path), stylesheets=styles)
+
+def _cent_to_eur(cents: int) -> float:
+    try:
+        return round(int(cents) / 100.0, 2)
+    except Exception:
+        return 0.0
 
 def _load_json(path: str):
     if not os.path.exists(path): return None
