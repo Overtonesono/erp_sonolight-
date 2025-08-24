@@ -64,19 +64,59 @@ def _to_dict(obj: Any) -> Dict[str, Any]:
         return {}
 
 def _price_to_cents(payload: Dict[str, Any]) -> int:
+    """
+    Retourne un prix en CENTIMES depuis divers champs possibles.
+    Accepte:
+      - Centimes: price_cents, price_cent, price_ttc_cent, price_ht_cent
+      - Euros:    price_eur, price, unit_price_eur, unit_price, priceTtcEur, ttc_eur
+      - Et en dernier recours: n'importe quelle clé contenant 'price' avec valeur numérique.
+    Gère virgule -> point, espaces, et le symbole €.
+    """
+    from decimal import Decimal, InvalidOperation
+    import re
+
+    # 1) champs en centimes déjà OK
     for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
         if k in payload and payload[k] not in (None, ""):
             try:
                 return max(0, int(payload[k]))
             except Exception:
                 pass
-    for k in ("price_eur", "price"):
-        if k in payload and payload[k] not in (None, ""):
+
+    def _clean_to_decimal(val: Any) -> Optional[Decimal]:
+        if val is None or val == "":
+            return None
+        if isinstance(val, (int, float)):
             try:
-                v = float(str(payload[k]).replace(",", "."))
-                return max(0, int(round(v * 100)))
+                return Decimal(str(val))
             except Exception:
-                pass
+                return None
+        s = str(val)
+        # retire tout sauf chiffres, signe, virgule, point
+        s = re.sub(r"[^0-9,.\-]", "", s)
+        # virgule -> point
+        s = s.replace(",", ".")
+        try:
+            return Decimal(s)
+        except (InvalidOperation, ValueError):
+            return None
+
+    # 2) champs en euros (liste connue)
+    euro_keys = ("price_eur", "price", "unit_price_eur", "unit_price", "priceTtcEur", "ttc_eur")
+    for k in euro_keys:
+        if k in payload and payload[k] not in (None, ""):
+            d = _clean_to_decimal(payload[k])
+            if d is not None:
+                # arrondi au centime
+                return max(0, int((d * 100).quantize(Decimal("1"))))
+
+    # 3) fallback: n'importe quelle clé contenant 'price'
+    for k, v in payload.items():
+        if "price" in k.lower() and v not in (None, ""):
+            d = _clean_to_decimal(v)
+            if d is not None:
+                return max(0, int((d * 100).quantize(Decimal("1"))))
+
     return 0
 
 def _qty_to_float(v: Any) -> float:
@@ -146,63 +186,63 @@ class QuoteService:
         except Exception:
             return None
 
-    def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Complète la ligne dict: description, label, unit, price_cents si manquants
-        depuis le catalogue (product_id/service_id ou ref), sinon fallback label.
-        Gère correctement les prix en euros (price_eur) -> centimes.
-        """
-        src: Optional[Dict[str, Any]] = (
-            self._get_product_dict(line.get("product_id")) or
-            self._get_service_dict(line.get("service_id"))
-        )
-        if not src and line.get("ref"):
-            src = self._find_catalog_by_ref(line["ref"])
+def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Complète la ligne dict: description, label, unit, price_cents si manquants
+    depuis le catalogue (product_id/service_id ou ref).
+    Gère correctement les prix en euros (price_eur, unit_price, ...).
+    """
+    src: Optional[Dict[str, Any]] = (
+        self._get_product_dict(line.get("product_id")) or
+        self._get_service_dict(line.get("service_id"))
+    )
+    if not src and line.get("ref"):
+        src = self._find_catalog_by_ref(line["ref"])
 
-        label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
-        unit = line.get("unit") if line.get("unit") is not None else (src.get("unit") if src else "")
-        desc = line.get("description") or (src.get("description") if src else None) or (label or "")
+    label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
+    unit = line.get("unit") if line.get("unit") is not None else (src.get("unit") if src else "")
+    desc  = line.get("description") or (src.get("description") if src else None) or (label or "")
 
-        # ---- Prix ----
-        # 1) si la ligne contient déjà un prix (centimes ou euros), on le prend
-        price_cents = line.get("price_cents")
+    # ---- Prix ----
+    # a) priorité à un prix déjà présent sur la ligne
+    price_cents = line.get("price_cents")
+    if price_cents in (None, "", 0):
+        price_cents = _price_to_cents(line)  # convertit price_eur/price/* -> centimes
+
+    # b) sinon, récupérer depuis la fiche catalogue (centimes OU euros)
+    if (price_cents in (None, "", 0)) and src:
+        # essaie les champs centimes connus…
+        for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
+            if src.get(k) not in (None, "", 0):
+                try:
+                    price_cents = int(src[k])
+                    break
+                except Exception:
+                    pass
+        # …puis conversion depuis euros ou autres variantes si encore 0
         if price_cents in (None, "", 0):
-            price_cents = _price_to_cents(line)  # convertit price_eur/price -> centimes
+            price_cents = _price_to_cents(src)
 
-        # 2) sinon, on récupère depuis la fiche catalogue (quel que soit le champ: cents ou euros)
-        if (price_cents in (None, "", 0)) and src:
-            # essaie champs "centimes" connus
-            for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
-                if src.get(k) not in (None, "", 0):
-                    try:
-                        price_cents = int(src[k])
-                        break
-                    except Exception:
-                        pass
-            # si toujours 0 -> convertit automatiquement depuis price_eur/price
-            if price_cents in (None, "", 0):
-                price_cents = _price_to_cents(src)
+    try:
+        price_cents = int(price_cents or 0)
+    except Exception:
+        price_cents = 0
 
-        try:
-            price_cents = int(price_cents or 0)
-        except Exception:
-            price_cents = 0
+    out = dict(line)
+    out.setdefault("ref", src.get("ref") if (src and not out.get("ref")) else out.get("ref"))
+    out["label"] = label or ""
+    out["unit"] = unit or ""
+    out["description"] = desc or ""
+    out["price_cents"] = price_cents
 
-        out = dict(line)
-        out.setdefault("ref", src.get("ref") if (src and not out.get("ref")) else out.get("ref"))
-        out["label"] = label or ""
-        out["unit"] = unit or ""
-        out["description"] = desc or ""
-        out["price_cents"] = price_cents
-
-        if not out.get("item_type"):
-            if out.get("product_id"):
-                out["item_type"] = "product"
-            elif out.get("service_id"):
-                out["item_type"] = "service"
-            else:
-                out["item_type"] = "item"
-        return out
+    if not out.get("item_type"):
+        if out.get("product_id"):
+            out["item_type"] = "product"
+        elif out.get("service_id"):
+            out["item_type"] = "service"
+        else:
+            out["item_type"] = "item"
+    return out
 
     # ---------- Hydratation Pydantic ---------- #
 
