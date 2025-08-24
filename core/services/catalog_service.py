@@ -27,11 +27,11 @@ class Service(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     price_cents: int = 0
+    unit: Optional[str] = ""          # <-- NEW
     active: bool = True
 
-    # En franchise de TVA: TTC == HT
     @property
-    def price_ttc_cent(self) -> int:
+    def price_ttc_cent(self) -> int:   # franchise TVA: TTC == HT
         try:
             v = getattr(self, "price_cents", 0)
             return int(v) if v is not None else 0
@@ -46,11 +46,11 @@ class Product(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     price_cents: int = 0
+    unit: Optional[str] = ""          # <-- NEW
     active: bool = True
 
-    # En franchise de TVA: TTC == HT
     @property
-    def price_ttc_cent(self) -> int:
+    def price_ttc_cent(self) -> int:   # franchise TVA: TTC == HT
         try:
             v = getattr(self, "price_cents", 0)
             return int(v) if v is not None else 0
@@ -65,8 +65,8 @@ class CatalogService:
     """
     Orchestrateur Produits & Services.
     - Si aucun repo n'est fourni, crée automatiquement data/services.json et data/products.json
-    - Hydrate JSON -> objets Product/Service (avec champs 'ref', 'label', etc.)
-    - Normalise: si 'label' absent, utilise 'name'
+    - Hydrate JSON -> objets Product/Service (champs 'ref', 'label', 'unit', etc.)
+    - Normalise: si 'label' absent -> name ; 'unit' -> "" ; 'price_cents' -> int >= 0
     """
 
     def __init__(
@@ -94,23 +94,28 @@ class CatalogService:
                 obj: T = model.model_validate(d)  # type: ignore[attr-defined]
             else:
                 obj = model(**d)  # type: ignore[call-arg]
-            # Normalisation: label fallback sur name
+
+            # Normalisations
             if getattr(obj, "label", None) in (None, ""):
                 try:
-                    setattr(obj, "label", getattr(obj, "name", ""))  # mutation OK
+                    setattr(obj, "label", getattr(obj, "name", ""))
                 except Exception:
                     pass
-            # Normalisation: price_cents doit être un int >= 0
             try:
                 val = getattr(obj, "price_cents", 0)
                 setattr(obj, "price_cents", int(val) if val is not None else 0)
             except Exception:
                 setattr(obj, "price_cents", 0)
+            if getattr(obj, "unit", None) is None:
+                try:
+                    setattr(obj, "unit", "")
+                except Exception:
+                    pass
+
             items.append(obj)
         return items
 
     def _ensure_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        # S'assure que label existe (fallback name), price_cents non nul
         name = payload.get("name") or ""
         if not payload.get("label"):
             payload["label"] = name
@@ -118,6 +123,8 @@ class CatalogService:
             payload["price_cents"] = int(payload.get("price_cents") or 0)
         except Exception:
             payload["price_cents"] = 0
+        if payload.get("unit") is None:
+            payload["unit"] = ""
         return payload
 
     # ---------- Services ---------- #
