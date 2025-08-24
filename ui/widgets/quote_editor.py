@@ -119,12 +119,12 @@ class QuoteEditor(QDialog):
         self._lines: list[QuoteLine] = []
         self._clients = self.service.load_client_map()
         for cid, c in self._clients.items():
-        self.cb_client.addItem(f"{c.name} ({c.email or '—'})", cid)
+            self.cb_client.addItem(f"{c.name} ({c.email or '—'})", cid)
                 
         if quote:
-        self._fill_from_quote(quote)
+            self._fill_from_quote(quote)
         else:
-        self._update_totals()
+            self._update_totals()
 
     # -------- UI helpers --------
     def _fill_from_quote(self, q: Quote):
