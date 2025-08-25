@@ -457,33 +457,49 @@ class MainWindow(QMainWindow):
         self.client_map = self.quote_service.load_client_map()
         items = self.quote_service.list_quotes()
         self.tbl_quotes.setRowCount(0)
+    
         for q in items:
-            r = self.tbl_quotes.rowCount(); self.tbl_quotes.insertRow(r)
+            r = self.tbl_quotes.rowCount()
+            self.tbl_quotes.insertRow(r)
+    
+            # Numéro
             self.tbl_quotes.setItem(r, 0, QTableWidgetItem(q.number or "—"))
+    
+            # Client
             cname = self.client_map.get(q.client_id).name if self.client_map.get(q.client_id) else "?"
             self.tbl_quotes.setItem(r, 1, QTableWidgetItem(cname))
+    
+            # Statut
             self.tbl_quotes.setItem(r, 2, QTableWidgetItem(q.status))
-            self.tbl_quotes.setItem(r, 3, QTableWidgetItem(f"{self._progress_value_for(q)}%"))
+    
+            # Progress = QProgressBar
+            pb = QProgressBar()
+            pb.setRange(0, 100)
+            val = self._progress_value_for(q)
+            pb.setValue(val)
+            # Style selon statut
+            if q.status == "REFUSED":
+                pb.setStyleSheet("QProgressBar::chunk{background:#d9534f;} QProgressBar{text-align:center;}")
+            elif q.status == "FINALIZED":
+                pb.setStyleSheet("QProgressBar::chunk{background:#5cb85c;} QProgressBar{text-align:center;}")
+            elif q.status == "VALIDATED":
+                pb.setStyleSheet("QProgressBar::chunk{background:#8bc34a;} QProgressBar{text-align:center;}")
+            else:  # PENDING
+                pb.setStyleSheet("QProgressBar::chunk{background:#bdbdbd;} QProgressBar{text-align:center;}")
+            self.tbl_quotes.setCellWidget(r, 3, pb)
+    
+            # Total TTC
             self.tbl_quotes.setItem(r, 4, QTableWidgetItem(money_cent_to_str(q.total_ttc_cent)))
+    
+            # Évènement
             self.tbl_quotes.setItem(r, 5, QTableWidgetItem(q.event_date.isoformat() if q.event_date else "—"))
+    
+            # ID
             self.tbl_quotes.setItem(r, 6, QTableWidgetItem(q.id))
+    
         self.tbl_quotes.resizeRowsToContents()
         # Maintient le résumé cohérent après refresh
         self._on_quote_selection_changed()
-
-    def _refresh_invoices_for_selected_quote(self):
-        qid = self._selected_quote_id()
-        self.tbl_invoices.setRowCount(0)
-        if not qid: return
-        for inv in self.invoice_service.list_by_quote(qid):
-            r = self.tbl_invoices.rowCount(); self.tbl_invoices.insertRow(r)
-            self.tbl_invoices.setItem(r, 0, QTableWidgetItem(inv.number or "—"))
-            self.tbl_invoices.setItem(r, 1, QTableWidgetItem(inv.type))
-            self.tbl_invoices.setItem(r, 2, QTableWidgetItem(inv.status))
-            self.tbl_invoices.setItem(r, 3, QTableWidgetItem(money_cent_to_str(inv.total_ttc_cent)))
-            self.tbl_invoices.setItem(r, 4, QTableWidgetItem(inv.created_at.strftime("%Y-%m-%d")))
-            self.tbl_invoices.setItem(r, 5, QTableWidgetItem(inv.id))
-        self.tbl_invoices.resizeRowsToContents()
 
     def _refresh_payments_for_selected_quote(self):
         qid = self._selected_quote_id()
