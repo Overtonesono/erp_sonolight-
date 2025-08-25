@@ -47,6 +47,7 @@ def _find_wkhtmltopdf_exe() -> Optional[str]:
         r"C:\Program Files (x86)\wkhtmltopdf\wkhtmltopdf.exe",
     ]
     for c in candidates:
+        import os
         if os.path.isfile(c):
             return c
     return None
@@ -148,52 +149,72 @@ class QuoteService:
         self.repo = JsonRepository(base / "quotes.json", entity_name="quote", key="id")
         self.catalog = CatalogService()
 
-    # ----- Enrichissement lignes ----- #
+    # ----- Recherche catalogue robuste ----- #
 
-    def _find_catalog_by_ref(self, ref: str) -> Optional[Dict[str, Any]]:
-        for p in self.catalog.list_products():
-            if (p.ref or "").strip() == (ref or "").strip():
-                return p.model_dump() if hasattr(p, "model_dump") else dict(p.__dict__)
-        for s in self.catalog.list_services():
-            if (s.ref or "").strip() == (ref or "").strip():
-                return s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__)
+    def _find_catalog_match(self, line: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Tente dans l'ordre :
+        - product_id / service_id
+        - ref exacte
+        - label/name (insensible à la casse, trim)
+        Retourne le dict source (product/service) si trouvé.
+        """
+        # 1) Par ID direct
+        pid = (line.get("product_id") or "") or None
+        sid = (line.get("service_id") or "") or None
+        if pid:
+            try:
+                p = self.catalog.get_product(pid)
+                if p:
+                    return p.model_dump() if hasattr(p, "model_dump") else dict(p.__dict__)
+            except Exception:
+                pass
+        if sid:
+            try:
+                s = self.catalog.get_service(sid)
+                if s:
+                    return s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__)
+            except Exception:
+                pass
+
+        # 2) Par ref
+        ref = (line.get("ref") or "").strip()
+        if ref:
+            for p in self.catalog.list_products():
+                if ((p.ref or "").strip() == ref):
+                    return p.model_dump() if hasattr(p, "model_dump") else dict(p.__dict__)
+            for s in self.catalog.list_services():
+                if ((s.ref or "").strip() == ref):
+                    return s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__)
+
+        # 3) Par label / name (fallback)
+        lbl = (line.get("label") or line.get("name") or "").strip().casefold()
+        if lbl:
+            for p in self.catalog.list_products():
+                if ((p.label or p.name or "").strip().casefold() == lbl):
+                    return p.model_dump() if hasattr(p, "model_dump") else dict(p.__dict__)
+            for s in self.catalog.list_services():
+                if ((s.label or s.name or "").strip().casefold() == lbl):
+                    return s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__)
+
         return None
 
-    def _get_product_dict(self, pid: Optional[str]) -> Optional[Dict[str, Any]]:
-        if not pid:
-            return None
-        try:
-            p = self.catalog.get_product(pid)
-            return p.model_dump() if hasattr(p, "model_dump") else dict(p.__dict__)
-        except Exception:
-            return None
-
-    def _get_service_dict(self, sid: Optional[str]) -> Optional[Dict[str, Any]]:
-        if not sid:
-            return None
-        try:
-            s = self.catalog.get_service(sid)
-            return s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__)
-        except Exception:
-            return None
+    # ----- Enrichissement lignes ----- #
 
     def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
         """
         Complète la ligne dict: description, label, unit, price_cents si manquants
-        depuis le catalogue (product_id/service_id ou ref). Gère les prix en euros.
+        depuis le catalogue (product_id/service_id, ref, ou label/name).
+        Gère les prix en euros et centimes.
         """
-        src: Optional[Dict[str, Any]] = (
-            self._get_product_dict(line.get("product_id")) or
-            self._get_service_dict(line.get("service_id"))
-        )
-        if not src and line.get("ref"):
-            src = self._find_catalog_by_ref(line["ref"])
+        src: Optional[Dict[str, Any]] = self._find_catalog_match(line)
 
+        # Libellé / Unité / Description
         label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
         unit = line.get("unit") if line.get("unit") is not None else ((src.get("unit") if src else "") or "")
         desc = line.get("description") or (src.get("description") if src else None) or (label or "")
 
-        # Prix : priorité au contenu de la ligne, sinon fiche catalogue
+        # Prix : priorité à la ligne, sinon fiche catalogue
         price_cents = _price_to_cents(line)
         if (price_cents in (None, "", 0)) and src:
             price_cents = _price_to_cents(src)
@@ -203,7 +224,10 @@ class QuoteService:
             price_cents = 0
 
         out = dict(line)
-        out.setdefault("ref", (src.get("ref") if src else None) if not out.get("ref") else out.get("ref"))
+        # Remplir ref depuis la source si non renseignée
+        if not out.get("ref") and src:
+            out["ref"] = src.get("ref") or src.get("id")
+
         out["label"] = label or ""
         out["unit"] = unit or ""
         out["description"] = desc or ""
@@ -418,11 +442,13 @@ class QuoteService:
             qty = getattr(ln, "qty", 1) or 1
             pc = int(getattr(ln, "price_cents", 0) or 0)
             total = int(getattr(ln, "total_ttc_cent", int(round(pc * float(qty)))) or 0)
+            # gérer les descriptions multi-lignes
+            desc_html = _escape_html(desc).replace("\n", "<br>")
             rows_html.append(
                 f"<tr>"
                 f"<td>{_escape_html(ref)}</td>"
                 f"<td><div><strong>{_escape_html(label)}</strong></div>"
-                f"<div style='color:#666;font-size:12px'>{_escape_html(desc)}</div></td>"
+                f"<div style='color:#666;font-size:12px'>{desc_html}</div></td>"
                 f"<td style='text-align:center'>{_escape_html(unit)}</td>"
                 f"<td style='text-align:right'>{qty:g}</td>"
                 f"<td style='text-align:right'>{_cent_to_str(pc)}</td>"
