@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
             return dict(self.__dict__)
 
 from core.storage.json_repo import JsonRepository
+        # attention au chemin de ton projet
 from core.services.catalog_service import CatalogService
 from core.models.quote import Quote, QuoteLine
 
@@ -71,7 +72,7 @@ def _price_to_cents(payload: Dict[str, Any]) -> int:
     import re
 
     # Champs déjà en centimes
-    for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent"):
+    for k in ("price_cents", "price_cent", "price_ttc_cent", "price_ht_cent", "unit_price_cent", "unit_price_cents"):
         if k in payload and payload[k] not in (None, ""):
             try:
                 return max(0, int(payload[k]))
@@ -205,7 +206,7 @@ class QuoteService:
         """
         Complète la ligne dict: description, label, unit, price_cents si manquants
         depuis le catalogue (product_id/service_id, ref, ou label/name).
-        Gère les prix en euros et centimes.
+        Gère les prix en euros et centimes, et duplique en price_cent (compat).
         """
         src: Optional[Dict[str, Any]] = self._find_catalog_match(line)
 
@@ -215,7 +216,7 @@ class QuoteService:
         desc = line.get("description") or (src.get("description") if src else None) or (label or "")
 
         # Prix : priorité à la ligne, sinon fiche catalogue
-        price_cents = _price_to_cents(line)
+        price_cents = _price_to_cents(_to_dict(line))
         if (price_cents in (None, "", 0)) and src:
             price_cents = _price_to_cents(src)
         try:
@@ -224,14 +225,18 @@ class QuoteService:
             price_cents = 0
 
         out = dict(line)
+
         # Remplir ref depuis la source si non renseignée
         if not out.get("ref") and src:
-            out["ref"] = src.get("ref") or src.get("id")
+            out["ref"] = src.get("ref") or src.get("id") or ""
 
         out["label"] = label or ""
         out["unit"] = unit or ""
         out["description"] = desc or ""
+
+        # Ecrire les deux clés pour compat Pydantic/modèles hétérogènes
         out["price_cents"] = price_cents
+        out["price_cent"] = price_cents
 
         if not out.get("item_type"):
             if out.get("product_id"):
@@ -246,16 +251,25 @@ class QuoteService:
 
     def _hydrate_line(self, d: Dict[str, Any]) -> QuoteLine:
         e = self._enrich_line_dict(d)
+
         # Ultime sécurité si 0 et que la source brute a un autre champ prix
-        if int(e.get("price_cents") or 0) == 0:
-            pc = _price_to_cents(d)
+        if int(e.get("price_cents") or 0) == 0 and int(e.get("price_cent") or 0) == 0:
+            pc = _price_to_cents(_to_dict(d))
             if pc:
-                e["price_cents"] = pc
+                e["price_cents"] = int(pc)
+                e["price_cent"] = int(pc)
+
         qty = _qty_to_float(e.get("qty", e.get("quantity", 1)))
-        pc = int(e.get("price_cents") or 0)
+        pc = int(e.get("price_cents") or e.get("price_cent") or 0)
+
         e["qty"] = qty
         e["total_ttc_cent"] = int(round(pc * qty))  # TTC = HT (293B)
-        return QuoteLine.model_validate(e) if _HAS_PYDANTIC and hasattr(QuoteLine, "model_validate") else QuoteLine(**e)  # type: ignore
+        # ne jamais perdre total si le modèle droppe des champs
+        e["total_ht_cent"] = e["total_ttc_cent"]
+
+        return (QuoteLine.model_validate(e)
+                if _HAS_PYDANTIC and hasattr(QuoteLine, "model_validate")
+                else QuoteLine(**e))  # type: ignore
 
     def _hydrate_payment_obj(self, d: Dict[str, Any]) -> SimpleNamespace:
         """Retourne un petit objet avec .at/.amount_cent/.method/.invoice_id/.kind"""
@@ -424,6 +438,7 @@ class QuoteService:
         from pathlib import Path
         import pdfkit
 
+        # Toujours re-hydrater pour s'assurer que totaux/prix/refs sont cohérents
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
         created_str = getattr(q, "created_at", None)
@@ -431,19 +446,24 @@ class QuoteService:
         client_id = getattr(q, "client_id", None)
         client_name = f"Client {client_id or ''}".strip()
 
-        # Lignes
-        lines = getattr(q, "items", None) or getattr(q, "lines", [])
-        rows_html = []
-        for ln in lines:
-            ref = getattr(ln, "ref", "") or ""
-            label = getattr(ln, "label", "") or ""
-            desc = getattr(ln, "description", "") or ""
-            unit = getattr(ln, "unit", "") or ""
-            qty = getattr(ln, "qty", 1) or 1
-            pc = int(getattr(ln, "price_cents", 0) or 0)
-            total = int(getattr(ln, "total_ttc_cent", int(round(pc * float(qty)))) or 0)
-            # gérer les descriptions multi-lignes
+        # Lignes -> toujours passer par dict pour lire prix/ref/qty proprement
+        raw_lines = getattr(q, "items", None) or getattr(q, "lines", []) or []
+        rows_html: List[str] = []
+        total_ttc_acc = 0
+
+        for ln in raw_lines:
+            ld = _to_dict(ln)
+            ref = (ld.get("ref") or "").strip()
+            label = (ld.get("label") or ld.get("name") or "").strip()
+            desc = (ld.get("description") or label or "").strip()
+            unit = (ld.get("unit") or "").strip()
+            qty = _qty_to_float(ld.get("qty", ld.get("quantity", 1)))
+            pc = _price_to_cents(ld)
+            total = int(round(pc * qty))
+            total_ttc_acc += total
+
             desc_html = _escape_html(desc).replace("\n", "<br>")
+
             rows_html.append(
                 f"<tr>"
                 f"<td>{_escape_html(ref)}</td>"
@@ -455,8 +475,10 @@ class QuoteService:
                 f"<td style='text-align:right'>{_cent_to_str(total)}</td>"
                 f"</tr>"
             )
-        total_ttc = int(getattr(q, "total_ttc_cent", 0) or 0)
-        total_ht = int(getattr(q, "total_ht_cent", total_ttc) or 0)
+
+        # Totaux
+        total_ttc = int(getattr(q, "total_ttc_cent", total_ttc_acc) or total_ttc_acc)
+        total_ht = int(getattr(q, "total_ht_cent", total_ttc) or total_ttc)
 
         html = f"""<!doctype html>
 <html lang="fr">
