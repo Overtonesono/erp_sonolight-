@@ -218,28 +218,63 @@ class QuoteService:
         return None
 
     # ----- Enrichissement lignes ----- #
-
+    
     def _enrich_line_dict(self, line: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Complète la ligne: ref, label, unit, description, price_cents depuis le catalogue
+        (product_id/service_id, ref, ou label/name insensible à la casse).
+        """
         src = self._find_catalog_match(line)
-
-        label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None)
-        unit = line.get("unit") if line.get("unit") is not None else ((src.get("unit") if src else "") or "")
-        desc = line.get("description") or (src.get("description") if src else None) or (label or "")
-
-        price_cents = _extract_unit_price_cents(line)
-        if price_cents == 0 and src:
-            price_cents = _extract_unit_price_cents(src)
-
+    
+        # libellés
+        label = line.get("label") or (src.get("label") if src else None) or (src.get("name") if src else None) or ""
+        unit  = line.get("unit") if line.get("unit") is not None else ((src.get("unit") if src else "") or "")
+        desc  = line.get("description") or (src.get("description") if src else None) or label
+    
+        # prix: si la ligne n'a pas de prix ou 0 -> on récupère le prix du catalogue
+        def _unit_price_cents(d: Dict[str, Any]) -> int:
+            # lecture robuste de toutes les variantes
+            for k in ("price_cents","price_cent","unit_price_cent","unit_price_cents","price_ttc_cent","price_ht_cent"):
+                v = d.get(k)
+                if v not in (None, "", 0):
+                    try:
+                        return int(v)
+                    except Exception:
+                        pass
+            # euros
+            from decimal import Decimal
+            for k in ("price_eur","unit_price_eur","ttc_eur"):
+                v = d.get(k)
+                if v not in (None, ""):
+                    try:
+                        return int(Decimal(str(v))*100)
+                    except Exception:
+                        pass
+            # heuristique price / unit_price
+            for k in ("unit_price","price"):
+                v = d.get(k)
+                if v not in (None, ""):
+                    try:
+                        dv = Decimal(str(v))
+                        # si entier et >= 10000 on suppose déjà en centimes
+                        return int(dv) if (dv == int(dv) and int(dv) >= 10000) else int(dv*100)
+                    except Exception:
+                        pass
+            return 0
+    
+        price_line = _unit_price_cents(line)
+        price_src  = _unit_price_cents(src or {})
+        price_cents = price_line or price_src or 0
+    
         out = dict(line)
         if not out.get("ref") and src:
             out["ref"] = src.get("ref") or src.get("id") or ""
-
-        out["label"] = label or ""
-        out["unit"] = unit or ""
-        out["description"] = desc or ""
+        out["label"] = label
+        out["unit"] = unit
+        out["description"] = desc
         out["price_cents"] = int(price_cents)
-        out["price_cent"] = int(price_cents)  # compat
-
+        out["price_cent"]  = int(price_cents)  # compat
+    
         if not out.get("item_type"):
             if out.get("product_id"):
                 out["item_type"] = "product"
@@ -432,35 +467,62 @@ class QuoteService:
     def export_quote_pdf(self, quote: Quote | Dict[str, Any]) -> str:
         from datetime import datetime as _dt
         import pdfkit
-
+    
+        # Ré-hydrate pour recalcul propre
         q = quote if isinstance(quote, Quote) else self._hydrate_quote(_to_dict(quote))
         number = getattr(q, "number", None) or "DV-XXXX-XXXX"
         created_str = getattr(q, "created_at", None)
         created_fmt = created_str.strftime("%Y-%m-%d") if hasattr(created_str, "strftime") else _dt.now().strftime("%Y-%m-%d")
         client_id = getattr(q, "client_id", None)
         client_name = f"Client {client_id or ''}".strip()
-
+    
         rows_html: List[str] = []
         total_ttc_acc = 0
         raw_lines = getattr(q, "items", None) or getattr(q, "lines", []) or []
-
+    
+        def _unit_price_cents(d: Dict[str, Any]) -> int:
+            # même logique que ci-dessus (synchro)
+            for k in ("price_cents","price_cent","unit_price_cent","unit_price_cents","price_ttc_cent","price_ht_cent"):
+                v = d.get(k)
+                if v not in (None, "", 0):
+                    try: return int(v)
+                    except Exception: pass
+            from decimal import Decimal
+            for k in ("price_eur","unit_price_eur","ttc_eur"):
+                v = d.get(k)
+                if v not in (None, ""):
+                    try: return int(Decimal(str(v))*100)
+                    except Exception: pass
+            for k in ("unit_price","price"):
+                v = d.get(k)
+                if v not in (None, ""):
+                    try:
+                        dv = Decimal(str(v))
+                        return int(dv) if (dv == int(dv) and int(dv) >= 10000) else int(dv*100)
+                    except Exception: pass
+            return 0
+    
         for ln in raw_lines:
             ld = _to_dict(ln)
-
-            # REF: si vide -> re-resolve via catalogue
+            # REF: si vide -> re-résolution catalogue
             ref = (ld.get("ref") or "").strip()
             if not ref:
                 src = self._find_catalog_match(ld) or {}
                 ref = (src.get("ref") or src.get("id") or "").strip()
-
+    
             label = (ld.get("label") or ld.get("name") or "").strip()
-            desc = (ld.get("description") or label or "").strip()
-            unit = (ld.get("unit") or "").strip()
-            qty = _qty_to_float(ld.get("qty", ld.get("quantity", 1)))
-            pc = _extract_unit_price_cents(ld)
+            desc  = (ld.get("description") or label or "").strip()
+            unit  = (ld.get("unit") or "").strip()
+            qty   = _qty_to_float(ld.get("qty", ld.get("quantity", 1)))
+    
+            pc = _unit_price_cents(ld)
+            if pc == 0:
+                src = self._find_catalog_match(ld) or {}
+                pc = _unit_price_cents(src)
+    
             total = int(round(pc * qty))
             total_ttc_acc += total
-
+    
             desc_html = _escape_html(desc).replace("\n", "<br>")
             rows_html.append(
                 f"<tr>"
@@ -473,75 +535,75 @@ class QuoteService:
                 f"<td style='text-align:right'>{_cent_to_str(total)}</td>"
                 f"</tr>"
             )
-
+    
         total_ttc = int(getattr(q, "total_ttc_cent", total_ttc_acc) or total_ttc_acc)
-        total_ht = int(getattr(q, "total_ht_cent", total_ttc) or total_ttc)
-
+        total_ht  = int(getattr(q, "total_ht_cent", total_ttc) or total_ttc)
+    
         html = f"""<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8"/>
-<title>Devis {number}</title>
-<style>
-  body {{ font-family: Arial, sans-serif; font-size: 14px; color:#111; }}
-  h1 {{ font-size: 20px; margin:0 0 4px 0; }}
-  .meta {{ margin-bottom: 16px; }}
-  table {{ width:100%; border-collapse: collapse; }}
-  th, td {{ border:1px solid #ddd; padding:8px; vertical-align: top; }}
-  th {{ background:#f5f5f5; text-align:left; }}
-  .totals td {{ padding:6px 8px; }}
-  .right {{ text-align:right; }}
-  .muted {{ color:#666; font-size:12px; }}
-</style>
-</head>
-<body>
-  <h1>Devis { _escape_html(number) }</h1>
-  <div class="meta">
-    <div><strong>Date :</strong> { _escape_html(created_fmt) }</div>
-    <div><strong>Client :</strong> { _escape_html(client_name) }</div>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th style="width:12%">Réf</th>
-        <th>Libellé / Description</th>
-        <th style="width:10%">Unité</th>
-        <th style="width:10%" class="right">Qté</th>
-        <th style="width:14%" class="right">Prix</th>
-        <th style="width:14%" class="right">Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      {''.join(rows_html) or '<tr><td colspan="6" class="muted">Aucune ligne</td></tr>'}
-    </tbody>
-  </table>
-
-  <table style="width:100%; margin-top:12px; border: none;">
-    <tr class="totals">
-      <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
-      <td style="border:none"></td>
-      <td class="right" style="border:none"><strong>Total HT</strong></td>
-      <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ht)}</strong></td>
-    </tr>
-    <tr class="totals">
-      <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
-      <td style="border:none"></td>
-      <td class="right" style="border:none"><strong>Total TTC</strong></td>
-      <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ttc)}</strong></td>
-    </tr>
-    <tr>
-      <td colspan="6" class="muted">TVA non applicable, art. 293B du CGI.</td>
-    </tr>
-  </table>
-</body>
-</html>"""
-
+    <html lang="fr">
+    <head>
+    <meta charset="utf-8"/>
+    <title>Devis {number}</title>
+    <style>
+      body {{ font-family: Arial, sans-serif; font-size: 14px; color:#111; }}
+      h1 {{ font-size: 20px; margin:0 0 4px 0; }}
+      .meta {{ margin-bottom: 16px; }}
+      table {{ width:100%; border-collapse: collapse; }}
+      th, td {{ border:1px solid #ddd; padding:8px; vertical-align: top; }}
+      th {{ background:#f5f5f5; text-align:left; }}
+      .totals td {{ padding:6px 8px; }}
+      .right {{ text-align:right; }}
+      .muted {{ color:#666; font-size:12px; }}
+    </style>
+    </head>
+    <body>
+      <h1>Devis { _escape_html(number) }</h1>
+      <div class="meta">
+        <div><strong>Date :</strong> { _escape_html(created_fmt) }</div>
+        <div><strong>Client :</strong> { _escape_html(client_name) }</div>
+      </div>
+    
+      <table>
+        <thead>
+          <tr>
+            <th style="width:12%">Réf</th>
+            <th>Libellé / Description</th>
+            <th style="width:10%">Unité</th>
+            <th style="width:10%" class="right">Qté</th>
+            <th style="width:14%" class="right">Prix</th>
+            <th style="width:14%" class="right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows_html) or '<tr><td colspan="6" class="muted">Aucune ligne</td></tr>'}
+        </tbody>
+      </table>
+    
+      <table style="width:100%; margin-top:12px; border: none;">
+        <tr class="totals">
+          <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
+          <td style="border:none"></td>
+          <td class="right" style="border:none"><strong>Total HT</strong></td>
+          <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ht)}</strong></td>
+        </tr>
+        <tr class="totals">
+          <td style="border:none"></td><td style="border:none"></td><td style="border:none"></td>
+          <td style="border:none"></td>
+          <td class="right" style="border:none"><strong>Total TTC</strong></td>
+          <td class="right" style="border:1px solid #ddd"><strong>{_cent_to_str(total_ttc)}</strong></td>
+        </tr>
+        <tr>
+          <td colspan="6" class="muted">TVA non applicable, art. 293B du CGI.</td>
+        </tr>
+      </table>
+    </body>
+    </html>"""
+    
         project_root = Path(__file__).resolve().parents[2]
         out_dir = project_root / "exports" / "devis"
         out_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = out_dir / f"{number}.pdf"
-
+    
         wkhtml = _find_wkhtmltopdf_exe()
         if not wkhtml:
             raise RuntimeError(
@@ -552,3 +614,4 @@ class QuoteService:
         options = {"quiet": "", "encoding": "UTF-8", "enable-local-file-access": None}
         pdfkit.from_string(html, str(pdf_path), configuration=config, options=options)
         return str(pdf_path)
+
