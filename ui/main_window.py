@@ -352,6 +352,7 @@ class MainWindow(QMainWindow):
         self.tbl_quotes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_quotes.setSelectionBehavior(self.tbl_quotes.SelectionBehavior.SelectRows)
         self.tbl_quotes.setEditTriggers(self.tbl_quotes.EditTrigger.NoEditTriggers)
+        self.tbl_quotes.setSortingEnabled(True)
         root.addWidget(self.tbl_quotes, 1)
 
         # Table factures liées
@@ -454,6 +455,10 @@ class MainWindow(QMainWindow):
 
     # ---------- Listes / refresh ----------
     def _refresh_quotes(self):
+        # Conserver l'état du tri pour éviter les sauts pendant le remplissage
+        was_sorting = self.tbl_quotes.isSortingEnabled()
+        self.tbl_quotes.setSortingEnabled(False)
+    
         self.client_map = self.quote_service.load_client_map()
         items = self.quote_service.list_quotes()
         self.tbl_quotes.setRowCount(0)
@@ -462,8 +467,9 @@ class MainWindow(QMainWindow):
             r = self.tbl_quotes.rowCount()
             self.tbl_quotes.insertRow(r)
     
-            # Numéro
-            self.tbl_quotes.setItem(r, 0, QTableWidgetItem(q.number or "—"))
+            # Numéro (tri alphanumérique par défaut)
+            num_item = QTableWidgetItem(q.number or "—")
+            self.tbl_quotes.setItem(r, 0, num_item)
     
             # Client
             cname = self.client_map.get(q.client_id).name if self.client_map.get(q.client_id) else "?"
@@ -472,12 +478,17 @@ class MainWindow(QMainWindow):
             # Statut
             self.tbl_quotes.setItem(r, 2, QTableWidgetItem(q.status))
     
-            # Progress = QProgressBar
+            # Progress = QProgressBar + clé de tri numérique sur l'item
+            val = self._progress_value_for(q)
+    
+            # Item "fantôme" pour la clé de tri (DisplayRole = int) — non visible car recouvert par le widget
+            prog_item = QTableWidgetItem(f"{val}%")
+            prog_item.setData(Qt.ItemDataRole.DisplayRole, int(val))  # tri numérique
+            self.tbl_quotes.setItem(r, 3, prog_item)
+    
             pb = QProgressBar()
             pb.setRange(0, 100)
-            val = self._progress_value_for(q)
             pb.setValue(val)
-            # Style selon statut
             if q.status == "REFUSED":
                 pb.setStyleSheet("QProgressBar::chunk{background:#d9534f;} QProgressBar{text-align:center;}")
             elif q.status == "FINALIZED":
@@ -488,17 +499,25 @@ class MainWindow(QMainWindow):
                 pb.setStyleSheet("QProgressBar::chunk{background:#bdbdbd;} QProgressBar{text-align:center;}")
             self.tbl_quotes.setCellWidget(r, 3, pb)
     
-            # Total TTC
-            self.tbl_quotes.setItem(r, 4, QTableWidgetItem(money_cent_to_str(q.total_ttc_cent)))
+            # Total TTC (clé de tri numérique en centimes)
+            total_item = QTableWidgetItem(money_cent_to_str(q.total_ttc_cent))
+            total_item.setData(Qt.ItemDataRole.DisplayRole, int(q.total_ttc_cent))
+            self.tbl_quotes.setItem(r, 4, total_item)
     
-            # Évènement
-            self.tbl_quotes.setItem(r, 5, QTableWidgetItem(q.event_date.isoformat() if q.event_date else "—"))
+            # Évènement (clé de tri date ISO si présente, sinon vide)
+            ev_text = q.event_date.isoformat() if q.event_date else "—"
+            ev_item = QTableWidgetItem(ev_text)
+            # Pour un tri correct, utiliser AAAA-MM-JJ comme clé (ISO déjà OK) ; sinon vide
+            ev_item.setData(Qt.ItemDataRole.DisplayRole, ev_text if q.event_date else "")
+            self.tbl_quotes.setItem(r, 5, ev_item)
     
             # ID
             self.tbl_quotes.setItem(r, 6, QTableWidgetItem(q.id))
     
         self.tbl_quotes.resizeRowsToContents()
-        # Maintient le résumé cohérent après refresh
+    
+        # Réactiver le tri et laisser la sélection/summary se mettre à jour
+        self.tbl_quotes.setSortingEnabled(was_sorting)
         self._on_quote_selection_changed()
 
     def _refresh_payments_for_selected_quote(self):
