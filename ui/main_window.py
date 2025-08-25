@@ -402,6 +402,20 @@ class MainWindow(QMainWindow):
         else:  # PENDING
             css = "QProgressBar::chunk{background:#bdbdbd;} QProgressBar{text-align:center;}"
         self.progress.setStyleSheet(css)
+
+    def _financial_summary_from_quote(self, q):
+        """Retourne (total, paid, due) en centimes pour un devis."""
+        q2 = self.quote_service.recalc_totals(q)
+        qd = q2.model_dump() if hasattr(q2, "model_dump") else q2.__dict__
+        total = int(qd.get("total_ttc_cent") or 0)
+        paid = 0
+        for p in qd.get("payments", []):
+            try:
+                paid += int(p.get("amount_cent"))
+            except Exception:
+                paid += int(getattr(p, "amount_cent", 0))
+        due = max(0, total - paid)
+        return total, paid, due
     
     def _update_controls_state(self, q: Optional[Quote]):
         # Active/désactive boutons selon l'état
@@ -446,9 +460,10 @@ class MainWindow(QMainWindow):
         q = self.quote_service.get_by_id(qid)
         if not q: return
         self.progress.setValue(self._progress_value_for(q))
-        t = money_cent_to_str(q.total_ttc_cent)
-        p = money_cent_to_str(q.paid_total_cent())
-        r = money_cent_to_str(q.remaining_cent())
+        total, paid, due = self._financial_summary_from_quote(q)
+        t = money_cent_to_str(total)
+        p = money_cent_to_str(paid)
+        r = money_cent_to_str(due)
         ev = q.event_date.isoformat() if q.event_date else "–"
         self.lbl_summary.setText(f"Total: {t} | Payé: {p} | Reste: {r} | Évènement: {ev}")
     
